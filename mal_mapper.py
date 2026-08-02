@@ -9,6 +9,10 @@ MyAnimeList API v2 for every title, and writes four result files:
     results/first_results_fallback.json  ← top MAL result used as fallback
     results/not_matching.json            ← nothing found on MAL
 
+Tracking files (auto-created / updated in results/):
+    results/already_processed_items.txt  ← URIs already done; skipped on re-run
+    results/range_tracking.txt           ← log of every range that was processed
+
 Environment variables (set as GitHub Actions secrets / vars):
     MAL_CLIENT_ID      – MAL API v2 client id
     INPUT_JSON_URL     – raw GitHub URL to animegg_all_series1.json
@@ -28,6 +32,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -45,11 +50,13 @@ RATE_LIMIT_DELAY = 0.5   # seconds between MAL requests  (~2 req/s, limit is 3)
 MAX_RETRIES      = 3
 RETRY_DELAY      = 6     # seconds to wait after 429 / 5xx
 
-RESULTS_DIR = Path("results")
-OUT_EXACT   = RESULTS_DIR / "exact_matching.json"
-OUT_FUZZY   = RESULTS_DIR / "fuzzy_matching.json"
-OUT_FIRST   = RESULTS_DIR / "first_results_fallback.json"
-OUT_NONE    = RESULTS_DIR / "not_matching.json"
+RESULTS_DIR      = Path("results")
+OUT_EXACT        = RESULTS_DIR / "exact_matching.json"
+OUT_FUZZY        = RESULTS_DIR / "fuzzy_matching.json"
+OUT_FIRST        = RESULTS_DIR / "first_results_fallback.json"
+OUT_NONE         = RESULTS_DIR / "not_matching.json"
+OUT_PROCESSED    = RESULTS_DIR / "already_processed_items.txt"
+OUT_RANGE_LOG    = RESULTS_DIR / "range_tracking.txt"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -58,9 +65,6 @@ def parse_range(raw_start: str, raw_end: str, total: int) -> tuple[int, int]:
     """
     Convert raw RANGE_START / RANGE_END strings (1-based) into a
     zero-based Python slice (start_idx, end_idx) where end_idx is exclusive.
-
-    Validates that values are positive integers within [1, total] and that
-    start ≤ end.  Exits with a clear message on bad input.
     """
     try:
         start_1 = int(raw_start) if raw_start else 1
@@ -78,12 +82,61 @@ def parse_range(raw_start: str, raw_end: str, total: int) -> tuple[int, int]:
     if start_1 > end_1:
         sys.exit(f"❌  RANGE_START ({start_1}) must be ≤ RANGE_END ({end_1}).")
 
-    # Convert to 0-based slice bounds
-    return start_1 - 1, end_1
+    return start_1 - 1, end_1   # 0-based slice bounds
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Already-processed helpers ─────────────────────────────────────────────────
+def load_processed(path: Path) -> set[str]:
+    """Return the set of URIs already processed from the tracking file."""
+    if not path.exists():
+        return set()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    uris  = {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
+    print(f"📂  Loaded {len(uris)} already-processed URIs from {path}")
+    return uris
+
+
+def append_processed(path: Path, uri: str) -> None:
+    """Append a single URI to the processed tracking file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(uri + "\n")
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+# ── Range-tracking helpers ────────────────────────────────────────────────────
+def init_range_log(path: Path) -> None:
+    """Create the range log file with a header if it doesn't exist yet."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# Range Tracking Log — MAL ID Mapper\n")
+            f.write("# Format: TIMESTAMP | RANGE_START–RANGE_END | processed | skipped | total_in_range\n")
+            f.write("#\n")
+
+
+def append_range_log(
+    path: Path,
+    start_1: int,
+    end_1: int,
+    processed: int,
+    skipped: int,
+    total_in_range: int,
+) -> None:
+    """Append one run's range summary line to the log."""
+    ts    = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    line  = (
+        f"{ts} | {start_1}–{end_1} | "
+        f"processed={processed} | skipped={skipped} | total_in_range={total_in_range}\n"
+    )
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
+    print(f"    📝  {path}  (range {start_1}–{end_1} logged)")
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+# ── Core helpers ──────────────────────────────────────────────────────────────
 def normalize(text: str) -> str:
     """Lowercase, strip punctuation – used for title comparison."""
     return re.sub(r"[^\w\s]", "", text.lower()).strip()
@@ -186,11 +239,13 @@ def search_mal(title: str, session: requests.Session) -> dict | None:
     return None
 
 
-def build_entry(anime: dict, result: dict | None) -> dict:
+def build_entry(serial_no: int, anime: dict, result: dict | None) -> dict:
     """
-    Merge original anime fields with MAL result fields into one output record.
+    Merge serial number + original anime fields + MAL result into one record.
+    serial_no is the 1-based position of this entry in the full source list.
     """
     base = {
+        "serial_no":     serial_no,          # ← position in the full source list
         "title":         anime.get("title"),
         "uri":           anime.get("uri"),
         "url":           anime.get("url"),
@@ -223,12 +278,22 @@ def main() -> None:
     total      = len(anime_list)
     print(f"📋  {total} anime entries loaded.")
 
+    # ── Load already-processed URIs ───────────────────────────────────────────
+    processed_uris = load_processed(OUT_PROCESSED)
+
+    # ── Init range log ────────────────────────────────────────────────────────
+    init_range_log(OUT_RANGE_LOG)
+
     # ── Apply custom range ────────────────────────────────────────────────────
     slice_start, slice_end = parse_range(_RAW_START, _RAW_END, total)
     anime_slice = anime_list[slice_start:slice_end]
     slice_len   = len(anime_slice)
 
-    range_label = f"{slice_start + 1}–{slice_end}"   # 1-based for display
+    # 1-based display labels
+    range_start_1 = slice_start + 1
+    range_end_1   = slice_end
+    range_label   = f"{range_start_1}–{range_end_1}"
+
     if slice_len == total:
         print(f"🔢  Processing all {total} entries.\n{'─'*60}")
     else:
@@ -240,42 +305,59 @@ def main() -> None:
     first_fallback: list[dict] = []
     not_found:      list[dict] = []
 
+    actually_processed = 0   # entries queried this run (not skipped)
+    actually_skipped   = 0   # entries skipped due to already_processed_items
+
     # ── Main loop ─────────────────────────────────────────────────────────────
     for i, anime in enumerate(anime_slice, 1):
-        # Display the real (1-based) index within the full list
-        real_idx = slice_start + i
-        title = (anime.get("title") or "").strip()
+        real_idx  = slice_start + i          # 1-based position in full list
+        serial_no = real_idx                 # serial_no == position in source
+        title     = (anime.get("title") or "").strip()
+        uri       = (anime.get("uri")   or "").strip()
+
         if not title:
             print(f"[{real_idx:>4}/{total}] ⚠  Skipping entry with no title.")
+            continue
+
+        # ── Skip if already processed ─────────────────────────────────────────
+        if uri and uri in processed_uris:
+            print(f"[{real_idx:>4}/{total}] ⏭   Skipping '{title}' (already processed)")
+            actually_skipped += 1
             continue
 
         print(f"[{real_idx:>4}/{total}] 🔎  '{title}' …", end=" ", flush=True)
 
         result = search_mal(title, session)
+        actually_processed += 1
 
         if result is None:
-            entry = build_entry(anime, None)
+            entry = build_entry(serial_no, anime, None)
             not_found.append(entry)
             print("❌  not found")
 
         elif result["confidence"] == "exact":
-            entry = build_entry(anime, result)
+            entry = build_entry(serial_no, anime, result)
             exact_matches.append(entry)
             print(f"✅  exact      mal_id={result['id']}  → '{result['mal_title']}'")
 
         elif result["confidence"] == "fuzzy":
-            entry = build_entry(anime, result)
+            entry = build_entry(serial_no, anime, result)
             fuzzy_matches.append(entry)
             print(f"🟡  fuzzy      mal_id={result['id']}  → '{result['mal_title']}'")
 
         else:  # "first"
-            entry = build_entry(anime, result)
+            entry = build_entry(serial_no, anime, result)
             first_fallback.append(entry)
             print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'")
 
-        # Save progress every 100 entries
-        if i % 100 == 0:
-            print(f"\n    ── Checkpoint {i}/{slice_len} (global {real_idx}/{total}) ──")
+        # Mark as processed immediately so partial runs are recoverable
+        if uri:
+            append_processed(OUT_PROCESSED, uri)
+            processed_uris.add(uri)
+
+        # Checkpoint every 100 processed entries
+        if actually_processed % 100 == 0:
+            print(f"\n    ── Checkpoint {actually_processed} processed (global {real_idx}/{total}) ──")
             save(OUT_EXACT, exact_matches)
             save(OUT_FUZZY, fuzzy_matches)
             save(OUT_FIRST, first_fallback)
@@ -292,16 +374,27 @@ def main() -> None:
     save(OUT_FIRST, first_fallback)
     save(OUT_NONE,  not_found)
 
+    # ── Log this range ────────────────────────────────────────────────────────
+    append_range_log(
+        OUT_RANGE_LOG,
+        start_1=range_start_1,
+        end_1=range_end_1,
+        processed=actually_processed,
+        skipped=actually_skipped,
+        total_in_range=slice_len,
+    )
+
     # ── Summary ───────────────────────────────────────────────────────────────
     print(f"\n{'═'*60}")
     if slice_len < total:
         print(f"  🔢  Range processed        : {range_label} ({slice_len} entries)")
+    print(f"  ⏭   Skipped (done before)  : {actually_skipped}")
     print(f"  ✅  Exact matches          : {len(exact_matches)}")
     print(f"  🟡  Fuzzy matches          : {len(fuzzy_matches)}")
     print(f"  🟠  First-result fallbacks : {len(first_fallback)}")
     print(f"  ❌  Not found              : {len(not_found)}")
     print(f"  ─────────────────────────────")
-    print(f"  📋  Total processed        : {slice_len}")
+    print(f"  📋  Total queried this run : {actually_processed}")
     print(f"{'═'*60}")
 
 
