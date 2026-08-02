@@ -1,0 +1,90 @@
+name: MAL ID Mapper
+
+on:
+  # ── Manual trigger with optional custom URL ──────────────────────────────
+  workflow_dispatch:
+    inputs:
+      input_json_url:
+        description: >
+          Raw GitHub URL to animegg_all_series1.json
+          (leave blank to use the repo variable INPUT_JSON_URL)
+        required: false
+        default: ""
+
+  # ── Auto-run on a schedule (every Sunday 02:00 UTC) ──────────────────────
+  schedule:
+    - cron: "0 2 * * 0"
+
+  # ── Or run whenever the source JSON changes in this repo ─────────────────
+  push:
+    paths:
+      - "animegg_all_series1.json"
+
+jobs:
+  map-mal-ids:
+    name: Map MAL IDs → 4 result files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # needed to push result files back
+
+    steps:
+      # ── 1. Checkout repo ─────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── 2. Set up Python ─────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Install dependencies ───────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install requests
+
+      # ── 4. Resolve INPUT_JSON_URL ─────────────────────────────────────────
+      #   Priority: manual input → repo variable → fallback placeholder
+      - name: Resolve INPUT_JSON_URL
+        id: resolve_url
+        run: |
+          MANUAL="${{ github.event.inputs.input_json_url }}"
+          REPO_VAR="${{ vars.INPUT_JSON_URL }}"
+          if [ -n "$MANUAL" ]; then
+            echo "INPUT_JSON_URL=$MANUAL" >> "$GITHUB_ENV"
+            echo "Using URL from workflow_dispatch input."
+          elif [ -n "$REPO_VAR" ]; then
+            echo "INPUT_JSON_URL=$REPO_VAR" >> "$GITHUB_ENV"
+            echo "Using URL from repository variable INPUT_JSON_URL."
+          else
+            echo "❌ No INPUT_JSON_URL provided." >&2
+            exit 1
+          fi
+
+      # ── 5. Run the mapper ─────────────────────────────────────────────────
+      - name: Run MAL mapper
+        env:
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+          INPUT_JSON_URL: ${{ env.INPUT_JSON_URL }}
+        run: python mal_mapper.py
+
+      # ── 6. Commit & push results ──────────────────────────────────────────
+      - name: Commit result files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add results/exact_matching.json \
+                  results/fuzzy_matching.json \
+                  results/first_results_fallback.json \
+                  results/not_matching.json
+
+          # Only commit if something actually changed
+          if git diff --cached --quiet; then
+            echo "No changes to commit — result files are identical."
+          else
+            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+            git commit -m "chore: update MAL ID results [${TIMESTAMP}]"
+            git push
+          fi
