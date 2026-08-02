@@ -26,9 +26,11 @@ Source records now look like:
 
 Tier 1 — Title pass
     Search MAL with the primary `title`. Score every candidate MAL node
-    against `title` using a blended fuzzy-matching function (see
-    `similarity()` below) that combines four different signals so a
-    candidate only needs to agree on ONE of them to score well:
+    against ALL known titles (primary title + every alternate_title part)
+    using a blended fuzzy-matching function (see `similarity()` below).
+    This ensures a MAL candidate whose main title or English title matches
+    an alternate_title is promoted to exact/fuzzy on the very first pass,
+    without needing to wait for Tier 2. Signals used:
         • plain normalised string ratio
         • token-sort ratio      (handles reordered words, e.g. "Shippuden Naruto")
         • token-set ratio       (handles extra/missing words, à la fuzzywuzzy)
@@ -54,14 +56,14 @@ Status handling
     it never disqualifies a title match by itself. (Episode count, above,
     IS a hard disqualifier — the two work together but are not the same rule.)
 
-Episode-count filter (hard rule)
-    A MAL candidate is only acceptable if its `num_episodes` is EQUAL TO or
-    GREATER THAN the source's `episode_count` (unknown/0 on either side is
-    allowed through, since it can't be judged). This is what stops a
-    1-episode movie/OVA/special from being wrongly matched to a
-    1000+-episode ongoing series just because the title looks similar —
-    e.g. "Meitantei Conan Movie 14" (1 ep) is now correctly rejected as a
-    match for the 1182-episode ongoing "Detective Conan" series.
+Episode-count filter (hard rule — EXACT match required)
+    A MAL candidate is only acceptable if its `num_episodes` EXACTLY EQUALS
+    the source's `episode_count` (unknown/0 on either side is allowed
+    through, since it can't be judged). Exact equality prevents both
+    under-matching (a short dub repack accepted for a full series) AND
+    over-matching (a 1-episode movie matched to a 1000+-episode ongoing
+    series). E.g. "Meitantei Conan Movie 14" (1 ep) is correctly rejected
+    as a match for the 1182-episode "Detective Conan" series.
 
 Tracking files (auto-created / updated in results/):
     results/already_processed_items.txt  ← URL slugs already done; skipped on re-run
@@ -404,14 +406,12 @@ def _query_mal(
 
 def _episode_count_ok(anime_episode_count: int | None, mal_episodes: int | None) -> bool:
     """
-    Hard filter: a candidate is only acceptable if MAL's episode count is
-    EQUAL TO or GREATER THAN the source's episode_count.
+    Hard filter: a candidate is only acceptable if MAL's episode count EXACTLY
+    MATCHES the source's episode_count.
 
-    This exists specifically to reject spin-off movies/OVAs/specials that
-    share a title substring with a long-running series — e.g. a 1-episode
-    "Meitantei Conan Movie 14" must never be accepted as a match for the
-    1182-episode ongoing "Detective Conan" TV series, even though the title
-    scores extremely high on pure text similarity.
+    Exact equality prevents both over-matching (a 1-episode movie absorbing a
+    long-running series) AND under-matching (a dubbed short-run repack being
+    accepted for a full-length series).
 
     If either side is unknown (0 / None) we can't judge it, so we allow it
     through — MAL frequently reports num_episodes=0 for an ongoing series
@@ -419,7 +419,7 @@ def _episode_count_ok(anime_episode_count: int | None, mal_episodes: int | None)
     """
     if not anime_episode_count or not mal_episodes:
         return True   # unknown on either side — can't disqualify
-    return mal_episodes >= anime_episode_count
+    return mal_episodes == anime_episode_count
 
 
 def _is_not_yet_aired(mal_status: str | None) -> bool:
@@ -505,38 +505,49 @@ def search_mal(
     or None if MAL returned absolutely nothing usable for the primary title.
 
     Tier 1 — search MAL with the primary `title`; score results against
-      `title` alone. Score ≥ 99 → "exact". 60 ≤ score < 99 → "fuzzy".
+      ALL known titles (primary + every alternate_title part). This means
+      a MAL candidate whose main title or English title matches the input's
+      alternate title is correctly promoted to exact/fuzzy on the first pass
+      — e.g. "Rurouni Kenshin" (alternate) correctly matches MAL's English
+      title for "Rurouni Kenshin: Meiji Kenkaku Romantan". Score ≥ 99 →
+      "exact". 60 ≤ score < 99 → "fuzzy".
 
-    Tier 2 — only runs if Tier 1 found nothing ≥ 60. Splits
-      `alternate_title` on commas, queries MAL with each part, and scores
-      the combined result pool against ALL known titles (primary +
-      alternates). Same 60/99 thresholds apply.
+    Tier 2 — only runs if Tier 1 found nothing ≥ 60. Queries MAL with
+      each alternate title individually and scores the combined result pool
+      against ALL known titles. Same 60/99 thresholds apply.
 
     Fallback — if neither tier clears 60, the best-scoring candidate that
       still survives the episode-count filter is returned as confidence
       "first". If nothing survives that filter either, no result is
       returned rather than handing back an obviously-wrong movie/OVA.
 
-    Episode count is a HARD filter in every tier: a candidate whose MAL
-    episode count is smaller than the source's episode_count is rejected
-    outright (see `_episode_count_ok`) — this is what stops a 1-episode
-    movie from being matched to a 1000+ episode ongoing series. Status is
-    used only to break ties between equally-scored candidates.
+    Episode count is a HARD EXACT filter in every tier: a candidate whose
+    MAL episode count does not exactly equal the source's episode_count is
+    rejected outright (see `_episode_count_ok`). Unknown counts (0/None)
+    on either side are allowed through. Status is used only to break ties
+    between equally-scored candidates.
     """
     headers = {"X-MAL-CLIENT-ID": CLIENT_ID}
 
     # ── Tier 1: primary title ────────────────────────────────────────────────
+    # Score against BOTH the primary title and every alternate title so that
+    # a candidate whose MAL title matches the alternate (e.g. the English
+    # title "Rurouni Kenshin" matching MAL's <p class="title-english">) is
+    # correctly elevated to exact/fuzzy even on the first pass.
+    alt_titles_early = split_alt_titles(alternate_title)
+    all_known_titles_tier1 = [title] + alt_titles_early
+
     data1 = _query_mal(title, session, headers, limit=SEARCH_LIMIT)
 
     if data1:
-        node1, score1 = _best_candidate(data1, [title], anime_status, episode_count)
+        node1, score1 = _best_candidate(data1, all_known_titles_tier1, anime_status, episode_count)
         if node1 and score1 >= EXACT_MIN_SCORE:
             return _make_result(node1, "exact", score1)
         if node1 and score1 >= FUZZY_MIN_SCORE:
             return _make_result(node1, "fuzzy", score1)
 
     # ── Tier 2: alternate title(s) ────────────────────────────────────────────
-    alt_titles = split_alt_titles(alternate_title)
+    alt_titles = alt_titles_early   # already split above — reuse
     combined_data: list[dict] = list(data1) if data1 else []
 
     if alt_titles:
