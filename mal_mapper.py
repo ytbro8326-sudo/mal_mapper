@@ -1,3 +1,4 @@
+"""
 MAL ID Mapper for AnimeGG  ·  v4 (save after every single entry)
 ═════════════════════════════════════════════════════════════════
 Writes results/exact_matching.json, results/fuzzy_matching.json,
