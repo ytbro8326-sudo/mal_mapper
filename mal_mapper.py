@@ -251,59 +251,68 @@ def _score_candidates(
     norm_q: str,
     episode_count: int | None,
     anime_status: str | None,
-) -> tuple[dict | None, dict | None, dict | None]:
+) -> tuple[dict | None, dict | None]:
     """
-    Walk *data* and return three buckets (first hit wins each):
-        exact   – normalised title == norm_q  (episode count not gated)
-        fuzzy   – title substring match  AND  episode count matches
-        first   – episode count matches  (no title match required)
-    Returns (exact_node, best_fuzzy_node, first_ep_match_node).
+    Walk *data* and return two buckets:
+        exact  – title is an exact normalised match AND episode count matches
+        fuzzy  – title is a substring match AND episode count matches
+                 (status used to rank within fuzzy, not to filter)
+
+    Episode count is MANDATORY in both buckets when known on both sides.
+    A candidate whose episode count mismatches is always rejected, regardless
+    of how well the title matches — this was the source of wrong results like
+    "One Piece Movie 01" (1 ep) being accepted as exact for "One Piece" (1160 ep).
+
+    Returns (best_exact_node, best_fuzzy_node).
     """
     def episodes_ok(node: dict) -> bool:
         mal_eps = node.get("num_episodes") or 0
         src_eps = episode_count or 0
+        # If either side is unknown/0, we cannot disqualify
         if mal_eps == 0 or src_eps == 0:
             return True
         return mal_eps == src_eps
 
-    exact_node      = None
+    exact_candidates: list[tuple[dict, bool]] = []   # (node, status_matches)
     fuzzy_candidates: list[tuple[dict, bool]] = []
-    first_ep_node   = None
 
     for item in data:
         node = item["node"]
-        all_titles = collect_all_titles(node)
+        all_titles  = collect_all_titles(node)
         norm_titles = [normalize(t) for t in all_titles]
+        ep_ok       = episodes_ok(node)
 
-        # ── Exact ────────────────────────────────────────────────────────────
-        if exact_node is None and any(t == norm_q for t in norm_titles):
-            exact_node = node
-            continue   # exact beats everything; no need to score further
+        # ── Title matching ────────────────────────────────────────────────────
+        is_exact_title = any(t == norm_q for t in norm_titles)
+        is_fuzzy_title = (not is_exact_title) and any(
+            norm_q in t or t in norm_q for t in norm_titles
+        )
 
-        # ── Episode-count first-match ─────────────────────────────────────────
-        ep_ok = episodes_ok(node)
-        if first_ep_node is None and ep_ok:
-            first_ep_node = node
+        if not (is_exact_title or is_fuzzy_title):
+            continue   # no title hit at all — skip entirely
 
-        # ── Fuzzy (title substring + episode count) ───────────────────────────
-        title_hit = any(norm_q in t or t in norm_q for t in norm_titles)
-        if title_hit:
-            if ep_ok:
-                status_hit = _status_matches(anime_status, node.get("status"))
-                fuzzy_candidates.append((node, status_hit))
-            else:
-                print(
-                    f"    ↳  skipping '{node['title']}' "
-                    f"(ep mismatch: source={episode_count} mal={node.get('num_episodes')})"
-                )
+        if not ep_ok:
+            print(
+                f"    ↳  skipping '{node['title']}' "
+                f"(ep mismatch: source={episode_count} mal={node.get('num_episodes')})"
+            )
+            continue   # title matched but episode count is wrong — always reject
 
-    # Pick best fuzzy: status-match preferred
-    best_fuzzy = None
-    if fuzzy_candidates:
-        fuzzy_candidates.sort(key=lambda x: (0 if x[1] else 1))
-        best_fuzzy = fuzzy_candidates[0][0]
+        status_hit = _status_matches(anime_status, node.get("status"))
 
-    return exact_node, best_fuzzy, first_ep_node
+        if is_exact_title:
+            exact_candidates.append((node, status_hit))
+        else:
+            fuzzy_candidates.append((node, status_hit))
+
+    # Within each bucket prefer status-matching candidates
+    def best(candidates: list[tuple[dict, bool]]) -> dict | None:
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: (0 if x[1] else 1))
+        return candidates[0][0]
+
+    return best(exact_candidates), best(fuzzy_candidates)
 
 
 def search_mal(
@@ -338,47 +347,47 @@ def search_mal(
     Status is optional: a mismatch ranks a candidate lower but does not
     discard it.
     """
-    headers  = {"X-MAL-CLIENT-ID": CLIENT_ID}
-    norm_q   = normalize(title)
+    headers = {"X-MAL-CLIENT-ID": CLIENT_ID}
+    norm_q  = normalize(title)
 
-    # ── Pass 1: plain title ───────────────────────────────────────────────────
+    # ── Pass 1: plain title (limit 15) ───────────────────────────────────────
     data1 = _query_mal(title, session, headers, limit=15)
     if not data1:
         return None
 
-    exact1, fuzzy1, first1 = _score_candidates(
-        data1, norm_q, episode_count, anime_status
-    )
+    exact1, fuzzy1 = _score_candidates(data1, norm_q, episode_count, anime_status)
 
     if exact1:
         return _make_result(exact1, "exact")
     if fuzzy1:
         return _make_result(fuzzy1, "fuzzy")
 
-    # ── Pass 2: title + episode count (only when count is known) ─────────────
-    exact2 = fuzzy2 = first2 = None
-    if episode_count:
-        time.sleep(RATE_LIMIT_DELAY)   # extra courtesy delay for second call
-        query2 = f"{title} {episode_count}"
-        data2  = _query_mal(query2, session, headers, limit=15)
-        if data2:
-            exact2, fuzzy2, first2 = _score_candidates(
-                data2, norm_q, episode_count, anime_status
-            )
-            if exact2:
-                return _make_result(exact2, "exact")
-            if fuzzy2:
-                return _make_result(fuzzy2, "fuzzy")
+    # ── Pass 2: title + episode count ────────────────────────────────────────
+    # Triggered when Pass 1 finds nothing valid. Appending the episode count
+    # to the query nudges MAL toward the right series when the popular top
+    # results are all sequels, movies, or specials (e.g. "Naruto 220" surfaces
+    # the original series which MAL buries behind Shippuden).
+    if not episode_count:
+        # No episode count to help — nothing more we can do.
+        print(f"    ↳  no title+episode match found — marking not found")
+        return None
 
-    # ── First-result fallback: best episode-count match from either pass ──────
-    # Prefer Pass-1 result (closer title match) over Pass-2.
-    for node in (first1, first2):
-        if node is not None:
-            return _make_result(node, "first")
+    time.sleep(RATE_LIMIT_DELAY)   # courtesy delay before second API call
+    data2 = _query_mal(f"{title} {episode_count}", session, headers, limit=15)
+    if not data2:
+        print(f"    ↳  pass 2 returned no results — marking not found")
+        return None
+
+    exact2, fuzzy2 = _score_candidates(data2, norm_q, episode_count, anime_status)
+
+    if exact2:
+        return _make_result(exact2, "exact")
+    if fuzzy2:
+        return _make_result(fuzzy2, "fuzzy")
 
     print(
-        f"    ↳  no episode-count match in any pass "
-        f"(source={episode_count}) — marking not found"
+        f"    ↳  no title+episode match in either pass "
+        f"(source_eps={episode_count}) — marking not found"
     )
     return None
 
