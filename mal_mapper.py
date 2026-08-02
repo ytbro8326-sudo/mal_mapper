@@ -10,7 +10,7 @@ MyAnimeList API v2 for every title, and writes four result files:
     results/not_matching.json            ← nothing found on MAL
 
 Tracking files (auto-created / updated in results/):
-    results/already_processed_items.txt  ← URIs already done; skipped on re-run
+    results/already_processed_items.txt  ← URL slugs already done; skipped on re-run
     results/range_tracking.txt           ← log of every range that was processed
 
 Environment variables (set as GitHub Actions secrets / vars):
@@ -93,7 +93,7 @@ def load_processed(path: Path) -> set[str]:
         return set()
     lines = path.read_text(encoding="utf-8").splitlines()
     uris  = {ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")}
-    print(f"📂  Loaded {len(uris)} already-processed URIs from {path}")
+    print(f"📂  Loaded {len(uris)} already-processed URL slugs from {path}")
     return uris
 
 
@@ -329,17 +329,15 @@ def search_mal(
     return None
 
 
-def build_entry(serial_no: int, anime: dict, result: dict | None) -> dict:
+def build_entry(anime: dict, result: dict | None) -> dict:
     """
-    Merge serial number + original anime fields + MAL result into one record.
-    serial_no is the 1-based position of this entry in the full source list.
+    Merge original anime fields + MAL result into one record.
+    serial_no is read directly from the source JSON (already present there).
     """
     base = {
-        "serial_no":     serial_no,          # ← position in the full source list
+        "serial_no":     anime.get("serial_no"),
         "title":         anime.get("title"),
-        "uri":           anime.get("uri"),
         "url":           anime.get("url"),
-        "thumbnail_url": anime.get("thumbnail_url"),
         "episode_count": anime.get("episode_count"),
         "status":        anime.get("status"),
         "genres":        anime.get("genres", []),
@@ -405,16 +403,19 @@ def main() -> None:
     # ── Main loop ─────────────────────────────────────────────────────────────
     for i, anime in enumerate(anime_slice, 1):
         real_idx  = slice_start + i          # 1-based position in full list
-        serial_no = real_idx                 # serial_no == position in source
+        serial_no = anime.get("serial_no") or real_idx   # prefer source serial_no
         title     = (anime.get("title") or "").strip()
-        uri       = (anime.get("uri")   or "").strip()
+
+        # Derive a stable dedup key from the URL path (no uri field in new schema)
+        url       = (anime.get("url") or "").strip()
+        dedup_key = url.rstrip("/").rsplit("/", 1)[-1] if url else ""
 
         if not title:
             print(f"[{real_idx:>4}/{total}] ⚠  Skipping entry with no title.")
             continue
 
         # ── Skip if already processed ─────────────────────────────────────────
-        if uri and uri in processed_uris:
+        if dedup_key and dedup_key in processed_uris:
             print(f"[{real_idx:>4}/{total}] ⏭   Skipping '{title}' (already processed)")
             actually_skipped += 1
             continue
@@ -427,17 +428,17 @@ def main() -> None:
         actually_processed += 1
 
         if result is None:
-            entry = build_entry(serial_no, anime, None)
+            entry = build_entry(anime, None)
             not_found.append(entry)
             print("❌  not found")
 
         elif result["confidence"] == "exact":
-            entry = build_entry(serial_no, anime, result)
+            entry = build_entry(anime, result)
             exact_matches.append(entry)
             print(f"✅  exact      mal_id={result['id']}  → '{result['mal_title']}'")
 
         elif result["confidence"] == "fuzzy":
-            entry = build_entry(serial_no, anime, result)
+            entry = build_entry(anime, result)
             fuzzy_matches.append(entry)
             print(
                 f"🟡  fuzzy      mal_id={result['id']}  → '{result['mal_title']}'"
@@ -445,7 +446,7 @@ def main() -> None:
             )
 
         else:  # "first"
-            entry = build_entry(serial_no, anime, result)
+            entry = build_entry(anime, result)
             first_fallback.append(entry)
             print(
                 f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'"
@@ -453,9 +454,9 @@ def main() -> None:
             )
 
         # Mark as processed immediately so partial runs are recoverable
-        if uri:
-            append_processed(OUT_PROCESSED, uri)
-            processed_uris.add(uri)
+        if dedup_key:
+            append_processed(OUT_PROCESSED, dedup_key)
+            processed_uris.add(dedup_key)
 
         # Checkpoint every 100 processed entries
         if actually_processed % 100 == 0:
