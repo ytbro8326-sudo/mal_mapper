@@ -113,6 +113,11 @@ RETRY_DELAY      = 6     # seconds to wait after 429 / 5xx
 FUZZY_MIN_SCORE  = 60.0   # below this → candidate is rejected outright
 EXACT_MIN_SCORE  = 99.0   # at/above this → confidence "exact"
 
+# How many candidates MAL returns per search (title or alternate_title query).
+# Raised well above 30 so the real series isn't missed when it's buried
+# behind movies/OVAs/specials that share a similar title.
+SEARCH_LIMIT     = 40
+
 RESULTS_DIR      = Path("results")
 OUT_EXACT        = RESULTS_DIR / "exact_matching.json"
 OUT_FUZZY        = RESULTS_DIR / "fuzzy_matching.json"
@@ -364,7 +369,7 @@ def _query_mal(
     query: str,
     session: requests.Session,
     headers: dict,
-    limit: int = 15,
+    limit: int = SEARCH_LIMIT,
 ) -> list[dict]:
     """
     Fire one MAL search request and return the list of data nodes.
@@ -521,7 +526,7 @@ def search_mal(
     headers = {"X-MAL-CLIENT-ID": CLIENT_ID}
 
     # ── Tier 1: primary title ────────────────────────────────────────────────
-    data1 = _query_mal(title, session, headers, limit=15)
+    data1 = _query_mal(title, session, headers, limit=SEARCH_LIMIT)
 
     if data1:
         node1, score1 = _best_candidate(data1, [title], anime_status, episode_count)
@@ -539,7 +544,7 @@ def search_mal(
 
         for alt in alt_titles:
             time.sleep(RATE_LIMIT_DELAY)
-            data_alt = _query_mal(alt, session, headers, limit=15)
+            data_alt = _query_mal(alt, session, headers, limit=SEARCH_LIMIT)
             combined_data.extend(data_alt)
 
         if combined_data:
