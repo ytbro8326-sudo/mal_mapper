@@ -1,0 +1,39 @@
+[
+  {
+    "serial_no": 3,
+    "title": "Detective Conan",
+    "url": "https://www.animegg.org/series/detectiveconan",
+    "episode_count": 1182,
+    "status": "Ongoing",
+    "genres": [
+      "Adventure"
+    ],
+    "description": "Shinichi Kudou, a high school student of astounding talent in detective work, is well known for having solved several challenging cases. One day, when Shinichi spots two suspicious men and decides to...",
+    "mal_id": null,
+    "mal_title": null,
+    "mal_episodes": null,
+    "mal_status": null
+  },
+  {
+    "serial_no": 18,
+    "title": "Prince of Tennis",
+    "url": "https://www.animegg.org/series/prince-of-tennis",
+    "episode_count": 171,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Comedy",
+      "Shounen",
+      "Sports",
+      "Middle School",
+      "School Life",
+      "Clubs",
+      "Tennis"
+    ],
+    "description": "Echizen Ryoma is a young tennis prodigy who has won 4 consecutive tennis championships but who constantly lies in the shadow of his father, a former pro tennis player. He joins the Seishun Gakuen...",
+    "mal_id": null,
+    "mal_title": null,
+    "mal_episodes": null,
+    "mal_status": null
+  }
+]
