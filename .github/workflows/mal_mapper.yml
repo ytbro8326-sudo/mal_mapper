@@ -10,6 +10,12 @@ on:
         required: false
         default: ""
 
+      force_reset:
+        description: >
+          Set to 'true' to wipe all previous progress and start from scratch.
+        required: false
+        default: "false"
+
   schedule:
     - cron: "0 2 * * 0"
 
@@ -38,23 +44,32 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      # Override INPUT_JSON_URL only if manually supplied
+      # Override INPUT_JSON_URL only if manually supplied via dispatch
       - name: Set INPUT_JSON_URL (if provided via dispatch)
         if: github.event.inputs.input_json_url != ''
         run: echo "INPUT_JSON_URL=${{ github.event.inputs.input_json_url }}" >> "$GITHUB_ENV"
 
       - name: Run MAL mapper
-        run: python mal_mapper.py
+        run: |
+          if [ "${{ github.event.inputs.force_reset }}" = "true" ]; then
+            echo "🔄  force_reset=true — running with --force flag"
+            python mal_mapper.py --force
+          else
+            python mal_mapper.py
+          fi
 
       - name: Commit result files
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Stage result files + the crash-safe progress files
           git add results/exact_matching.json \
                   results/fuzzy_matching.json \
                   results/first_results_fallback.json \
-                  results/not_matching.json
+                  results/not_matching.json \
+                  results/progress.jsonl \
+                  results/.done 2>/dev/null || true
 
           if git diff --cached --quiet; then
             echo "No changes to commit — result files are identical."
