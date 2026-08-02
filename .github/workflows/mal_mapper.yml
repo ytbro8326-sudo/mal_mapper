@@ -75,7 +75,9 @@ jobs:
           git add results/exact_matching.json \
                   results/fuzzy_matching.json \
                   results/first_results_fallback.json \
-                  results/not_matching.json
+                  results/not_matching.json \
+                  results/already_processed_items.txt \
+                  results/range_tracking.txt
 
           if git diff --cached --quiet; then
             echo "No changes to commit — result files are identical."
