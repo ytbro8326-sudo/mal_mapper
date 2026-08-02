@@ -44,12 +44,21 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
+      # ── Configure git BEFORE the script runs so mid-run commits work ──────
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
       # Override INPUT_JSON_URL only if manually supplied via dispatch
       - name: Set INPUT_JSON_URL (if provided via dispatch)
         if: github.event.inputs.input_json_url != ''
         run: echo "INPUT_JSON_URL=${{ github.event.inputs.input_json_url }}" >> "$GITHUB_ENV"
 
+      # ── Run script — it commits+pushes every 10 entries itself ────────────
       - name: Run MAL mapper
+        env:
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
         run: |
           if [ "${{ github.event.inputs.force_reset }}" = "true" ]; then
             echo "🔄  force_reset=true — running with --force flag"
@@ -58,23 +67,18 @@ jobs:
             python mal_mapper.py
           fi
 
-      - name: Commit result files
+      # ── Final commit for any last remainder not yet pushed ────────────────
+      - name: Final commit (catch any remainder)
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Stage result files + the crash-safe progress files
           git add results/exact_matching.json \
                   results/fuzzy_matching.json \
                   results/first_results_fallback.json \
-                  results/not_matching.json \
-                  results/progress.jsonl \
-                  results/.done 2>/dev/null || true
+                  results/not_matching.json 2>/dev/null || true
 
           if git diff --cached --quiet; then
-            echo "No changes to commit — result files are identical."
+            echo "Nothing left to commit — all data already pushed mid-run."
           else
             TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-            git commit -m "chore: update MAL ID results [${TIMESTAMP}]"
+            git commit -m "chore: final MAL ID results [${TIMESTAMP}]"
             git push
           fi
