@@ -1,13 +1,61 @@
 """
-MAL ID Mapper for AnimeGG
-═════════════════════════
-Fetches animegg_all_series1.json from a GitHub raw URL, queries the
+MAL ID Mapper for AnimeGG — Advanced Fuzzy Matching Edition
+═════════════════════════════════════════════════════════════
+Fetches animegg_with_alternate_titles.json from a GitHub raw URL, queries the
 MyAnimeList API v2 for every title, and writes four result files:
 
-    results/exact_matching.json          ← exact title / alt-title match
-    results/fuzzy_matching.json          ← substring / partial match
-    results/first_results_fallback.json  ← top MAL result used as fallback
-    results/not_matching.json            ← nothing found on MAL
+    results/exact_matching.json          ← near-perfect title match  (score ≥ 99)
+    results/fuzzy_matching.json          ← strong partial match      (60 ≤ score < 99)
+    results/first_results_fallback.json  ← top MAL result used as a best-effort guess
+    results/not_matching.json            ← nothing usable found on MAL
+
+MATCHING STRATEGY (this is the part that changed)
+──────────────────────────────────────────────────
+Source records now look like:
+
+    {
+      "serial_no": 1,
+      "title": "One Piece",
+      "alternate_title": "ワンピース",
+      "url": "https://www.animegg.org/series/one-piece",
+      "episode_count": 1160,
+      "status": "Ongoing",
+      "genres": [...],
+      "description": "..."
+    }
+
+Tier 1 — Title pass
+    Search MAL with the primary `title`. Score every candidate MAL node
+    against `title` using a blended fuzzy-matching function (see
+    `similarity()` below) that combines four different signals so a
+    candidate only needs to agree on ONE of them to score well:
+        • plain normalised string ratio
+        • token-sort ratio      (handles reordered words, e.g. "Shippuden Naruto")
+        • token-set ratio       (handles extra/missing words, à la fuzzywuzzy)
+        • substring containment (one title fully embedded in the other)
+        • noise-stripped ratio  (ignores low-signal words like "the/movie/ova/season")
+    A candidate scoring ≥ 99 is treated as "exact"; ≥ 60 is "fuzzy".
+
+Tier 2 — Alternate-title pass (only runs if Tier 1 found nothing ≥ 60)
+    `alternate_title` is a comma-separated string (e.g. "Case Closed,
+    Meitantei Conan, 名探偵コナン"). Each part is queried against MAL
+    individually, and results are scored against the FULL set of known
+    titles (primary + every alternate). Same 60/99 thresholds apply.
+
+Fallback
+    If neither tier clears the 60% bar, the single top MAL search result
+    from Tier 1 is kept as a "first" (best-effort) match instead of
+    discarding the entry outright.
+
+Status handling
+    AnimeGG's `status` ("Ongoing"/"Completed"/"Upcoming") is mapped to MAL's
+    vocabulary (`currently_airing`/`finished_airing`/`not_yet_aired`) and is
+    used ONLY to break ties when two candidates score equally on title —
+    it never disqualifies a title match by itself.
+
+Episode counts are NOT used for matching at all (per requirement) — the
+source's `episode_count` is still carried through into the output purely
+for reference.
 
 Tracking files (auto-created / updated in results/):
     results/already_processed_items.txt  ← URL slugs already done; skipped on re-run
@@ -15,7 +63,7 @@ Tracking files (auto-created / updated in results/):
 
 Environment variables (set as GitHub Actions secrets / vars):
     MAL_CLIENT_ID      – MAL API v2 client id
-    INPUT_JSON_URL     – raw GitHub URL to animegg_all_series1.json
+    INPUT_JSON_URL     – raw GitHub URL to animegg_with_alternate_titles.json
     RANGE_START        – 1-based start index (inclusive); default: 1
     RANGE_END          – 1-based end index   (inclusive); default: last entry
 
@@ -33,13 +81,18 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CLIENT_ID      = os.environ.get("MAL_CLIENT_ID", "b0f57250436db633080e10767f2dab54").strip()
-INPUT_JSON_URL = os.environ.get("INPUT_JSON_URL", "https://raw.githubusercontent.com/ytbro8326-sudo/mal_mapper/refs/heads/main/animegg_all_series1.json").strip()
+INPUT_JSON_URL = os.environ.get(
+    "INPUT_JSON_URL",
+    "https://raw.githubusercontent.com/ytbro8326-sudo/animeg_main_web_urls_list_extractor/"
+    "refs/heads/main/animegg_with_alternate_titles.json",
+).strip()
 
 # Custom range (1-based, both inclusive). Empty string → no limit.
 _RAW_START = os.environ.get("RANGE_START", "").strip()
@@ -49,6 +102,10 @@ MAL_SEARCH_URL   = "https://api.myanimelist.net/v2/anime"
 RATE_LIMIT_DELAY = 0.5   # seconds between MAL requests  (~2 req/s, limit is 3)
 MAX_RETRIES      = 3
 RETRY_DELAY      = 6     # seconds to wait after 429 / 5xx
+
+# Matching thresholds (as percentages, 0-100)
+FUZZY_MIN_SCORE  = 60.0   # below this → candidate is rejected outright
+EXACT_MIN_SCORE  = 99.0   # at/above this → confidence "exact"
 
 RESULTS_DIR      = Path("results")
 OUT_EXACT        = RESULTS_DIR / "exact_matching.json"
@@ -136,12 +193,92 @@ def append_range_log(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# ── Core helpers ──────────────────────────────────────────────────────────────
+# ── Text normalisation & fuzzy scoring ────────────────────────────────────────
+_NOISE_WORDS = {
+    "the", "a", "an", "and", "of", "movie", "movies", "special", "specials",
+    "ova", "ovas", "ona", "onas", "tv", "series", "season", "seasons",
+    "part", "parts", "vol", "volume",
+}
+
+
 def normalize(text: str) -> str:
-    """Lowercase, strip punctuation – used for title comparison."""
-    return re.sub(r"[^\w\s]", "", text.lower()).strip()
+    """Lowercase, strip punctuation, collapse whitespace — used everywhere titles are compared."""
+    if not text:
+        return ""
+    text = text.lower()
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
+def _strip_noise(norm_text: str) -> str:
+    """Drop common low-signal words so 'Naruto Movie' vs 'Naruto' isn't over/under-penalised."""
+    words = [w for w in norm_text.split() if w not in _NOISE_WORDS]
+    return " ".join(words) if words else norm_text  # never collapse to empty
+
+
+def similarity(a: str, b: str) -> float:
+    """
+    Blended fuzzy score (0-100) between two titles. Combines several
+    complementary signals and returns the STRONGEST one, so a pair of
+    titles only needs to agree on one axis to score well:
+
+        • plain normalised ratio   (character-level similarity)
+        • token-sort ratio         (handles reordered words)
+        • token-set ratio          (handles extra/missing words)
+        • containment bonus        (one title fully embedded in the other)
+        • noise-stripped ratio     (ignores "the/movie/ova/season/part" etc.)
+    """
+    na, nb = normalize(a), normalize(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 100.0
+
+    def ratio(x: str, y: str) -> float:
+        return SequenceMatcher(None, x, y).ratio() * 100
+
+    scores = [ratio(na, nb)]
+
+    # token-sort ratio — same words, different order
+    ts_a = " ".join(sorted(na.split()))
+    ts_b = " ".join(sorted(nb.split()))
+    scores.append(ratio(ts_a, ts_b))
+
+    # token-set ratio — shared words weighted, unique words de-emphasised
+    set_a, set_b = set(na.split()), set(nb.split())
+    if set_a and set_b:
+        common   = set_a & set_b
+        common_s = " ".join(sorted(common))
+        diff_a   = " ".join(sorted(set_a - set_b))
+        diff_b   = " ".join(sorted(set_b - set_a))
+        scores.append(ratio((common_s + " " + diff_a).strip(),
+                             (common_s + " " + diff_b).strip()))
+
+    # containment — e.g. "Naruto" fully inside "Naruto Shippuden"
+    if na in nb or nb in na:
+        scores.append(95.0)
+
+    # noise-stripped ratio — ignore filler words entirely
+    sa, sb = _strip_noise(na), _strip_noise(nb)
+    if sa == sb:
+        scores.append(98.0)
+    else:
+        scores.append(ratio(sa, sb))
+
+    return max(scores)
+
+
+def split_alt_titles(raw: str | None) -> list[str]:
+    """Split the source 'alternate_title' comma-separated string into a clean list."""
+    if not raw:
+        return []
+    parts = [p.strip() for p in raw.split(",")]
+    return [p for p in parts if p]
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+# ── Core helpers ──────────────────────────────────────────────────────────────
 def load_anime_list(url: str, session: requests.Session) -> list[dict]:
     """Download JSON from *url* and return a flat list of anime dicts."""
     print(f"📥  Fetching source JSON …\n    {url}\n")
@@ -178,8 +315,8 @@ def collect_all_titles(node: dict) -> list[str]:
 
 def _status_matches(anime_status: str | None, mal_status: str | None) -> bool:
     """
-    Loosely compare AnimeGG status to MAL status.
-    Returns True when they agree, or when either side is unknown.
+    Loosely compare AnimeGG status to MAL status. Used ONLY as a tie-breaker
+    between equally-scored title candidates — never to reject a match.
     MAL status values: "finished_airing", "currently_airing", "not_yet_aired"
     AnimeGG status values: "Completed", "Ongoing", "Upcoming" (approximate)
     """
@@ -187,24 +324,26 @@ def _status_matches(anime_status: str | None, mal_status: str | None) -> bool:
         return True   # can't judge — treat as matching
 
     STATUS_MAP: dict[str, str] = {
-        "completed":  "finished_airing",
-        "finished":   "finished_airing",
-        "ongoing":    "currently_airing",
-        "airing":     "currently_airing",
-        "upcoming":   "not_yet_aired",
+        "completed":     "finished_airing",
+        "finished":      "finished_airing",
+        "ongoing":       "currently_airing",
+        "airing":        "currently_airing",
+        "currently airing": "currently_airing",
+        "upcoming":      "not_yet_aired",
         "not yet aired": "not_yet_aired",
     }
     mapped = STATUS_MAP.get(anime_status.lower().strip())
     return mapped is None or mapped == mal_status.lower().strip()
 
 
-def _make_result(node: dict, confidence: str) -> dict:
-    """Package a MAL node into the result dict that search_mal returns."""
+def _make_result(node: dict, confidence: str, score: float) -> dict:
+    """Package a MAL node + score into the result dict that search_mal returns."""
     return {
         "id":           node["id"],
         "mal_title":    node["title"],
         "confidence":   confidence,
-        "mal_episodes": node.get("num_episodes"),   # 0 = unknown on MAL side
+        "match_score":  round(score, 1),
+        "mal_episodes": node.get("num_episodes"),   # informational only, not used for matching
         "mal_status":   node.get("status"),
     }
 
@@ -246,149 +385,117 @@ def _query_mal(
     return []
 
 
-def _score_candidates(
+def _best_candidate(
     data: list[dict],
-    norm_q: str,
-    episode_count: int | None,
+    query_titles: list[str],
     anime_status: str | None,
-) -> tuple[dict | None, dict | None]:
+) -> tuple[dict | None, float]:
     """
-    Walk *data* and return two buckets:
-        exact  – title is an exact normalised match AND episode count matches
-        fuzzy  – title is a substring match AND episode count matches
-                 (status used to rank within fuzzy, not to filter)
+    Score every MAL candidate in *data* against every title in *query_titles*
+    (the best pairing per node wins) using the blended `similarity()` score.
+    Returns (best_node, best_score) — best_node is None if nothing scored > 0.
 
-    Episode count is MANDATORY in both buckets when known on both sides.
-    A candidate whose episode count mismatches is always rejected, regardless
-    of how well the title matches — this was the source of wrong results like
-    "One Piece Movie 01" (1 ep) being accepted as exact for "One Piece" (1160 ep).
-
-    Returns (best_exact_node, best_fuzzy_node).
+    Status agreement is used ONLY to break ties between candidates that end
+    up with the exact same top score; it never filters anything out, and
+    episode counts are not consulted at all.
     """
-    def episodes_ok(node: dict) -> bool:
-        mal_eps = node.get("num_episodes") or 0
-        src_eps = episode_count or 0
-        # If either side is unknown/0, we cannot disqualify
-        if mal_eps == 0 or src_eps == 0:
-            return True
-        return mal_eps == src_eps
-
-    exact_candidates: list[tuple[dict, bool]] = []   # (node, status_matches)
-    fuzzy_candidates: list[tuple[dict, bool]] = []
+    scored: list[tuple[float, bool, dict]] = []
 
     for item in data:
         node = item["node"]
-        all_titles  = collect_all_titles(node)
-        norm_titles = [normalize(t) for t in all_titles]
-        ep_ok       = episodes_ok(node)
+        candidate_titles = collect_all_titles(node)
 
-        # ── Title matching ────────────────────────────────────────────────────
-        is_exact_title = any(t == norm_q for t in norm_titles)
-        is_fuzzy_title = (not is_exact_title) and any(
-            norm_q in t or t in norm_q for t in norm_titles
-        )
+        node_score = 0.0
+        for q in query_titles:
+            for ct in candidate_titles:
+                s = similarity(q, ct)
+                if s > node_score:
+                    node_score = s
 
-        if not (is_exact_title or is_fuzzy_title):
-            continue   # no title hit at all — skip entirely
-
-        if not ep_ok:
-            print(
-                f"    ↳  skipping '{node['title']}' "
-                f"(ep mismatch: source={episode_count} mal={node.get('num_episodes')})"
-            )
-            continue   # title matched but episode count is wrong — always reject
+        if node_score <= 0:
+            continue
 
         status_hit = _status_matches(anime_status, node.get("status"))
+        scored.append((node_score, status_hit, node))
 
-        if is_exact_title:
-            exact_candidates.append((node, status_hit))
-        else:
-            fuzzy_candidates.append((node, status_hit))
+    if not scored:
+        return None, 0.0
 
-    # Within each bucket prefer status-matching candidates
-    def best(candidates: list[tuple[dict, bool]]) -> dict | None:
-        if not candidates:
-            return None
-        candidates.sort(key=lambda x: (0 if x[1] else 1))
-        return candidates[0][0]
-
-    return best(exact_candidates), best(fuzzy_candidates)
+    # Highest score wins; among equal scores, prefer status-matching candidate
+    scored.sort(key=lambda t: (-t[0], 0 if t[1] else 1))
+    top_score, _top_status_hit, top_node = scored[0]
+    return top_node, top_score
 
 
 def search_mal(
     title: str,
+    alternate_title: str | None,
     session: requests.Session,
-    episode_count: int | None = None,
     anime_status: str | None = None,
 ) -> dict | None:
     """
-    Query MAL for *title*. Returns:
+    Query MAL for an anime using a two-tier fuzzy strategy. Returns:
         {
             "id":           int,
             "mal_title":    str,
             "confidence":   "exact" | "fuzzy" | "first",
-            "mal_episodes": int | None,
+            "match_score":  float,       # 0-100, blended fuzzy score
+            "mal_episodes": int | None,  # informational only
             "mal_status":   str | None,
         }
-    or None if nothing found after all retries.
+    or None if MAL returned absolutely nothing for the primary title.
 
-    Search strategy (two passes):
-      Pass 1 — plain title query (limit 15):
-        Exact match → return immediately.
-        Fuzzy (title substring + episode count match) → keep as candidate.
-        Episode-count match (any title) → keep as fallback.
+    Tier 1 — search MAL with the primary `title`; score results against
+      `title` alone. Score ≥ 99 → "exact". 60 ≤ score < 99 → "fuzzy".
 
-      Pass 2 — triggered only when Pass 1 found no exact/fuzzy hit AND
-        episode_count is known. Queries "<title> <episode_count>" to surface
-        long-running or oddly-titled series that MAL buries in later pages.
-        Same scoring rules apply.
+    Tier 2 — only runs if Tier 1 found nothing ≥ 60. Splits
+      `alternate_title` on commas, queries MAL with each part, and scores
+      the combined result pool against ALL known titles (primary +
+      alternates). Same 60/99 thresholds apply.
 
-    Episode count is MANDATORY for fuzzy and first-result confidence.
-    Status is optional: a mismatch ranks a candidate lower but does not
-    discard it.
+    Fallback — if neither tier clears 60, the single top MAL result from
+      Tier 1's query is returned as confidence "first" (best-effort guess).
+
+    Episode counts are never consulted. Status is used only to break ties.
     """
     headers = {"X-MAL-CLIENT-ID": CLIENT_ID}
-    norm_q  = normalize(title)
 
-    # ── Pass 1: plain title (limit 15) ───────────────────────────────────────
+    # ── Tier 1: primary title ────────────────────────────────────────────────
     data1 = _query_mal(title, session, headers, limit=15)
-    if not data1:
-        return None
 
-    exact1, fuzzy1 = _score_candidates(data1, norm_q, episode_count, anime_status)
+    if data1:
+        node1, score1 = _best_candidate(data1, [title], anime_status)
+        if node1 and score1 >= EXACT_MIN_SCORE:
+            return _make_result(node1, "exact", score1)
+        if node1 and score1 >= FUZZY_MIN_SCORE:
+            return _make_result(node1, "fuzzy", score1)
 
-    if exact1:
-        return _make_result(exact1, "exact")
-    if fuzzy1:
-        return _make_result(fuzzy1, "fuzzy")
+    # ── Tier 2: alternate title(s) ────────────────────────────────────────────
+    alt_titles = split_alt_titles(alternate_title)
+    combined_data: list[dict] = list(data1) if data1 else []
 
-    # ── Pass 2: title + episode count ────────────────────────────────────────
-    # Triggered when Pass 1 finds nothing valid. Appending the episode count
-    # to the query nudges MAL toward the right series when the popular top
-    # results are all sequels, movies, or specials (e.g. "Naruto 220" surfaces
-    # the original series which MAL buries behind Shippuden).
-    if not episode_count:
-        # No episode count to help — nothing more we can do.
-        print(f"    ↳  no title+episode match found — marking not found")
-        return None
+    if alt_titles:
+        all_known_titles = [title] + alt_titles
 
-    time.sleep(RATE_LIMIT_DELAY)   # courtesy delay before second API call
-    data2 = _query_mal(f"{title} {episode_count}", session, headers, limit=15)
-    if not data2:
-        print(f"    ↳  pass 2 returned no results — marking not found")
-        return None
+        for alt in alt_titles:
+            time.sleep(RATE_LIMIT_DELAY)
+            data_alt = _query_mal(alt, session, headers, limit=15)
+            combined_data.extend(data_alt)
 
-    exact2, fuzzy2 = _score_candidates(data2, norm_q, episode_count, anime_status)
+        if combined_data:
+            node2, score2 = _best_candidate(combined_data, all_known_titles, anime_status)
+            if node2 and score2 >= EXACT_MIN_SCORE:
+                return _make_result(node2, "exact", score2)
+            if node2 and score2 >= FUZZY_MIN_SCORE:
+                return _make_result(node2, "fuzzy", score2)
 
-    if exact2:
-        return _make_result(exact2, "exact")
-    if fuzzy2:
-        return _make_result(fuzzy2, "fuzzy")
+    # ── Fallback: first raw result from the primary title query ─────────────
+    if data1:
+        top_node = data1[0]["node"]
+        print(f"    ↳  no match ≥ {FUZZY_MIN_SCORE:.0f}% — using top MAL result as fallback")
+        return _make_result(top_node, "first", 0.0)
 
-    print(
-        f"    ↳  no title+episode match in either pass "
-        f"(source_eps={episode_count}) — marking not found"
-    )
+    print("    ↳  MAL returned nothing at all — marking not found")
     return None
 
 
@@ -398,22 +505,25 @@ def build_entry(anime: dict, result: dict | None) -> dict:
     serial_no is read directly from the source JSON (already present there).
     """
     base = {
-        "serial_no":     anime.get("serial_no"),
-        "title":         anime.get("title"),
-        "url":           anime.get("url"),
-        "episode_count": anime.get("episode_count"),
-        "status":        anime.get("status"),
-        "genres":        anime.get("genres", []),
-        "description":   anime.get("description"),
+        "serial_no":       anime.get("serial_no"),
+        "title":           anime.get("title"),
+        "alternate_title": anime.get("alternate_title"),
+        "url":             anime.get("url"),
+        "episode_count":   anime.get("episode_count"),
+        "status":          anime.get("status"),
+        "genres":          anime.get("genres", []),
+        "description":     anime.get("description"),
     }
     if result:
         base["mal_id"]       = result["id"]
         base["mal_title"]    = result["mal_title"]
+        base["match_score"]  = result.get("match_score")
         base["mal_episodes"] = result.get("mal_episodes")
         base["mal_status"]   = result.get("mal_status")
     else:
         base["mal_id"]       = None
         base["mal_title"]    = None
+        base["match_score"]  = None
         base["mal_episodes"] = None
         base["mal_status"]   = None
     return base
@@ -468,8 +578,9 @@ def main() -> None:
         real_idx  = slice_start + i          # 1-based position in full list
         serial_no = anime.get("serial_no") or real_idx   # prefer source serial_no
         title     = (anime.get("title") or "").strip()
+        alt_title = (anime.get("alternate_title") or "").strip()
 
-        # Derive a stable dedup key from the URL path (no uri field in new schema)
+        # Derive a stable dedup key from the URL path
         url       = (anime.get("url") or "").strip()
         dedup_key = url.rstrip("/").rsplit("/", 1)[-1] if url else ""
 
@@ -485,9 +596,8 @@ def main() -> None:
 
         print(f"[{real_idx:>4}/{total}] 🔎  '{title}' …", end=" ", flush=True)
 
-        episode_count = anime.get("episode_count")
-        anime_status  = anime.get("status")
-        result = search_mal(title, session, episode_count=episode_count, anime_status=anime_status)
+        anime_status = anime.get("status")
+        result = search_mal(title, alt_title, session, anime_status=anime_status)
         actually_processed += 1
 
         if result is None:
@@ -498,23 +608,17 @@ def main() -> None:
         elif result["confidence"] == "exact":
             entry = build_entry(anime, result)
             exact_matches.append(entry)
-            print(f"✅  exact      mal_id={result['id']}  → '{result['mal_title']}'")
+            print(f"✅  exact      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'")
 
         elif result["confidence"] == "fuzzy":
             entry = build_entry(anime, result)
             fuzzy_matches.append(entry)
-            print(
-                f"🟡  fuzzy      mal_id={result['id']}  → '{result['mal_title']}'"
-                f"  [eps src={episode_count} mal={result.get('mal_episodes')}]"
-            )
+            print(f"🟡  fuzzy      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'")
 
         else:  # "first"
             entry = build_entry(anime, result)
             first_fallback.append(entry)
-            print(
-                f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'"
-                f"  [eps src={episode_count} mal={result.get('mal_episodes')}]"
-            )
+            print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'")
 
         # Mark as processed immediately so partial runs are recoverable
         if dedup_key:
