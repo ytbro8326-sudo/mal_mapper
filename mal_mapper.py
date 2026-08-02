@@ -9,19 +9,6 @@ MyAnimeList API v2 for every title, and writes four result files:
     results/first_results_fallback.json  ← top MAL result used as fallback
     results/not_matching.json            ← nothing found on MAL
 
-Resume / Crash-safety
-─────────────────────
-Every 100 processed entries the script atomically saves all four result
-files AND writes results/progress.json:
-
-    { "last_index": 4200, "processed": ["One Piece", "Naruto", ...] }
-
-If the run is interrupted (crash, timeout, Ctrl+C) the NEXT run:
-  1. Reads progress.json → learns last_index + already-processed titles.
-  2. Reloads all four result files back into memory.
-  3. Skips titles already in the processed set.
-  4. Continues from exactly where it stopped.
-
 Environment variables (set as GitHub Actions secrets / vars):
     MAL_CLIENT_ID      – MAL API v2 client id
     INPUT_JSON_URL     – raw GitHub URL to animegg_all_series1.json
@@ -48,18 +35,16 @@ MAL_SEARCH_URL   = "https://api.myanimelist.net/v2/anime"
 RATE_LIMIT_DELAY = 0.5   # seconds between MAL requests  (~2 req/s, limit is 3)
 MAX_RETRIES      = 3
 RETRY_DELAY      = 6     # seconds to wait after 429 / 5xx
-CHECKPOINT_EVERY = 100   # flush every N *newly processed* entries
 
-RESULTS_DIR  = Path("results")
-OUT_EXACT    = RESULTS_DIR / "exact_matching.json"
-OUT_FUZZY    = RESULTS_DIR / "fuzzy_matching.json"
-OUT_FIRST    = RESULTS_DIR / "first_results_fallback.json"
-OUT_NONE     = RESULTS_DIR / "not_matching.json"
-OUT_PROGRESS = RESULTS_DIR / "progress.json"   # ← new: resume tracker
+RESULTS_DIR = Path("results")
+OUT_EXACT   = RESULTS_DIR / "exact_matching.json"
+OUT_FUZZY   = RESULTS_DIR / "fuzzy_matching.json"
+OUT_FIRST   = RESULTS_DIR / "first_results_fallback.json"
+OUT_NONE    = RESULTS_DIR / "not_matching.json"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# ── Helpers (unchanged from original) ────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def normalize(text: str) -> str:
     """Lowercase, strip punctuation – used for title comparison."""
     return re.sub(r"[^\w\s]", "", text.lower()).strip()
@@ -183,175 +168,88 @@ def build_entry(anime: dict, result: dict | None) -> dict:
         base["mal_id"]    = None
         base["mal_title"] = None
     return base
-# ──────────────────────────────────────────────────────────────────────────────
 
 
-# ── Resume helpers (new) ──────────────────────────────────────────────────────
-def _read_json(path: Path) -> list | dict | None:
-    """Safely read a JSON file; return None if missing or corrupt."""
-    if not path.exists():
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def _atomic_save(path: Path, data: list | dict) -> None:
-    """
-    Write *data* to a .tmp file then rename it over *path*.
-    On Linux (GitHub Actions) os.replace() is atomic — the destination
-    file is either the old version or the new version, never half-written.
-    """
+def save(path: Path, records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
-
-def load_progress() -> tuple[set[str], list, list, list, list]:
-    """
-    Read progress.json + the four result files.
-
-    Returns:
-        processed_titles  – set of title strings already handled
-        exact, fuzzy, first_fb, none_found  – lists restored from disk
-                                              (all empty on a fresh run)
-    """
-    prog = _read_json(OUT_PROGRESS)
-    if not prog:
-        # Fresh run
-        return set(), [], [], [], []
-
-    processed_titles = set(prog.get("processed", []))
-
-    def _load_list(path: Path) -> list:
-        data = _read_json(path)
-        return data if isinstance(data, list) else []
-
-    exact    = _load_list(OUT_EXACT)
-    fuzzy    = _load_list(OUT_FUZZY)
-    first_fb = _load_list(OUT_FIRST)
-    none_fnd = _load_list(OUT_NONE)
-
-    print(
-        f"♻️   Resume detected — {len(processed_titles)} titles already processed.\n"
-        f"    Restored  ✅{len(exact)}  🟡{len(fuzzy)}  🟠{len(first_fb)}  ❌{len(none_fnd)}\n"
-        f"{'─'*60}"
-    )
-    return processed_titles, exact, fuzzy, first_fb, none_fnd
-
-
-def flush(
-    exact: list, fuzzy: list, first_fb: list, none_fnd: list,
-    processed_titles: set[str], checkpoint_label: str,
-) -> None:
-    """
-    Atomically write all four result files + progress.json, then print a
-    one-line summary.  Called every CHECKPOINT_EVERY entries and at end-of-run.
-    """
-    _atomic_save(OUT_EXACT, exact)
-    _atomic_save(OUT_FUZZY, fuzzy)
-    _atomic_save(OUT_FIRST, first_fb)
-    _atomic_save(OUT_NONE,  none_fnd)
-    _atomic_save(OUT_PROGRESS, {
-        "processed": sorted(processed_titles),   # sorted = human-readable diffs
-    })
-    total = len(exact) + len(fuzzy) + len(first_fb) + len(none_fnd)
-    print(
-        f"\n    💾  [{checkpoint_label}] saved {total} records total"
-        f"  (✅{len(exact)} 🟡{len(fuzzy)} 🟠{len(first_fb)} ❌{len(none_fnd)})\n"
-    )
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+    print(f"    💾  {path}  ({len(records)} entries)")
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
+    # ── Pre-flight checks ─────────────────────────────────────────────────────
+
     session    = requests.Session()
     anime_list = load_anime_list(INPUT_JSON_URL, session)
     total      = len(anime_list)
     print(f"📋  {total} anime entries loaded.\n{'─'*60}")
 
-    # ── Resume or fresh start ─────────────────────────────────────────────────
-    processed_titles, exact_matches, fuzzy_matches, first_fallback, not_found = \
-        load_progress()
-
-    if not processed_titles:
-        print(f"🆕  Fresh run — no previous progress found.\n{'─'*60}")
+    # ── Buckets ───────────────────────────────────────────────────────────────
+    exact_matches:  list[dict] = []
+    fuzzy_matches:  list[dict] = []
+    first_fallback: list[dict] = []
+    not_found:      list[dict] = []
 
     # ── Main loop ─────────────────────────────────────────────────────────────
-    #
-    # `new_this_run` counts entries processed IN THIS EXECUTION only.
-    # This keeps the checkpoint cadence correct even on a resume:
-    # e.g. if we resume at entry 4150, the first checkpoint still fires
-    # after 100 new entries (at 4250), not at the next multiple of 100
-    # from the source-list index.
-    #
-    new_this_run = 0
-
     for i, anime in enumerate(anime_list, 1):
         title = (anime.get("title") or "").strip()
-
         if not title:
-            print(f"[{i:>5}/{total}] ⚠  Skipping entry with no title.")
+            print(f"[{i:>4}/{total}] ⚠  Skipping entry with no title.")
             continue
 
-        # ── Skip already-processed titles (resume path) ───────────────────────
-        if title in processed_titles:
-            continue
+        print(f"[{i:>4}/{total}] 🔎  '{title}' …", end=" ", flush=True)
 
-        # ── Query MAL ─────────────────────────────────────────────────────────
-        print(f"[{i:>5}/{total}] 🔎  '{title}' …", end=" ", flush=True)
         result = search_mal(title, session)
 
         if result is None:
-            not_found.append(build_entry(anime, None))
+            entry = build_entry(anime, None)
+            not_found.append(entry)
             print("❌  not found")
 
         elif result["confidence"] == "exact":
-            exact_matches.append(build_entry(anime, result))
+            entry = build_entry(anime, result)
+            exact_matches.append(entry)
             print(f"✅  exact      mal_id={result['id']}  → '{result['mal_title']}'")
 
         elif result["confidence"] == "fuzzy":
-            fuzzy_matches.append(build_entry(anime, result))
+            entry = build_entry(anime, result)
+            fuzzy_matches.append(entry)
             print(f"🟡  fuzzy      mal_id={result['id']}  → '{result['mal_title']}'")
 
         else:  # "first"
-            first_fallback.append(build_entry(anime, result))
+            entry = build_entry(anime, result)
+            first_fallback.append(entry)
             print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'")
 
-        processed_titles.add(title)
-        new_this_run += 1
-
-        # ── Checkpoint every 100 NEW entries ──────────────────────────────────
-        if new_this_run % CHECKPOINT_EVERY == 0:
-            flush(
-                exact_matches, fuzzy_matches, first_fallback, not_found,
-                processed_titles,
-                checkpoint_label=f"{i}/{total}",
-            )
+        # Save progress every 100 entries
+        if i % 100 == 0:
+            print(f"\n    ── Checkpoint {i}/{total} ──")
+            save(OUT_EXACT, exact_matches)
+            save(OUT_FUZZY, fuzzy_matches)
+            save(OUT_FIRST, first_fallback)
+            save(OUT_NONE,  not_found)
+            print()
 
         time.sleep(RATE_LIMIT_DELAY)
 
     # ── Final save ────────────────────────────────────────────────────────────
     print(f"\n{'─'*60}")
     print("💾  Writing final result files …")
-    flush(
-        exact_matches, fuzzy_matches, first_fallback, not_found,
-        processed_titles,
-        checkpoint_label="FINAL",
-    )
+    save(OUT_EXACT, exact_matches)
+    save(OUT_FUZZY, fuzzy_matches)
+    save(OUT_FIRST, first_fallback)
+    save(OUT_NONE,  not_found)
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    print(f"{'═'*60}")
+    print(f"\n{'═'*60}")
     print(f"  ✅  Exact matches          : {len(exact_matches)}")
     print(f"  🟡  Fuzzy matches          : {len(fuzzy_matches)}")
     print(f"  🟠  First-result fallbacks : {len(first_fallback)}")
     print(f"  ❌  Not found              : {len(not_found)}")
     print(f"  ─────────────────────────────")
     print(f"  📋  Total processed        : {total}")
-    print(f"  🔄  New this run           : {new_this_run}")
     print(f"{'═'*60}")
 
 
