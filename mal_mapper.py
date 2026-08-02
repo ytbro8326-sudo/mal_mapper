@@ -1,9 +1,10 @@
 """
-MAL ID Mapper for AnimeGG  ·  v4 (save after every single entry)
-═════════════════════════════════════════════════════════════════
+MAL ID Mapper for AnimeGG  ·  v5 (save after every 10 successfully matched anime)
+═══════════════════════════════════════════════════════════════════════════════════
 Writes results/exact_matching.json, results/fuzzy_matching.json,
 results/first_results_fallback.json, results/not_matching.json
-after EVERY processed anime — no batching, no threads, no loss.
+after every 10 successfully matched anime (exact/fuzzy/fallback/not_found all count).
+Also does a final save at the very end.
 """
 
 import argparse
@@ -27,6 +28,7 @@ MAL_SEARCH_URL   = "https://api.myanimelist.net/v2/anime"
 RATE_LIMIT_DELAY = 0.5
 MAX_RETRIES      = 3
 RETRY_DELAY      = 6
+SAVE_EVERY       = 10   # ← save after every N successfully processed anime
 
 RESULTS_DIR = Path("results")
 OUT_EXACT   = RESULTS_DIR / "exact_matching.json"
@@ -127,7 +129,7 @@ def build_entry(anime: dict, result: dict | None) -> dict:
         "status":        anime.get("status"),
         "genres":        anime.get("genres", []),
         "description":   anime.get("description"),
-        "mal_id":        result["id"]    if result else None,
+        "mal_id":        result["id"]        if result else None,
         "mal_title":     result["mal_title"] if result else None,
     }
     return base
@@ -135,7 +137,7 @@ def build_entry(anime: dict, result: dict | None) -> dict:
 
 def save_all(exact: list, fuzzy: list, first: list, none: list) -> None:
     """
-    Overwrite all four result JSON files right now.
+    Overwrite all four result JSON files atomically.
     Uses write-to-tmp-then-rename so files are never half-written.
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -209,6 +211,9 @@ def main() -> None:
     total      = len(anime_list)
     print(f"📋  {total} anime entries loaded.\n{'─'*60}")
 
+    processed_this_run = 0   # counts only newly processed entries (not skipped)
+    batch_count        = 0   # how many in the current unsaved batch
+
     for i, anime in enumerate(anime_list, 1):
         title = (anime.get("title") or "").strip()
 
@@ -242,11 +247,27 @@ def main() -> None:
             print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'")
 
         seen_titles.add(title)
+        processed_this_run += 1
+        batch_count        += 1
 
-        # ── Write all 4 files to disk RIGHT NOW, every single anime ───────────
-        save_all(exact_matches, fuzzy_matches, first_fallback, not_found)
+        # ── Save every SAVE_EVERY successfully processed anime ─────────────────
+        if batch_count >= SAVE_EVERY:
+            save_all(exact_matches, fuzzy_matches, first_fallback, not_found)
+            total_done = len(exact_matches) + len(fuzzy_matches) + len(first_fallback) + len(not_found)
+            print(
+                f"\n    💾  Saved after {SAVE_EVERY} entries "
+                f"(total saved so far: {total_done})  "
+                f"[exact={len(exact_matches)}  fuzzy={len(fuzzy_matches)}  "
+                f"fallback={len(first_fallback)}  not_found={len(not_found)}]\n"
+            )
+            batch_count = 0   # reset counter for next batch of 10
 
         time.sleep(RATE_LIMIT_DELAY)
+
+    # ── Final save (catches any remainder < SAVE_EVERY) ───────────────────────
+    if batch_count > 0:
+        save_all(exact_matches, fuzzy_matches, first_fallback, not_found)
+        print(f"\n    💾  Final save — flushed remaining {batch_count} entries.")
 
     print(f"\n{'═'*60}")
     print(f"  ✅  Exact matches          : {len(exact_matches)}")
@@ -254,7 +275,7 @@ def main() -> None:
     print(f"  🟠  First-result fallbacks : {len(first_fallback)}")
     print(f"  ❌  Not found              : {len(not_found)}")
     print(f"  ─────────────────────────────")
-    print(f"  📋  Total processed        : {total}")
+    print(f"  📋  Total processed        : {processed_this_run} (this run)")
     print(f"{'═'*60}")
 
 
