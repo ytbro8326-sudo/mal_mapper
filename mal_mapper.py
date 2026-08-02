@@ -176,14 +176,71 @@ def collect_all_titles(node: dict) -> list[str]:
     return [t for t in titles if t]
 
 
-def search_mal(title: str, session: requests.Session) -> dict | None:
+def _status_matches(anime_status: str | None, mal_status: str | None) -> bool:
+    """
+    Loosely compare AnimeGG status to MAL status.
+    Returns True when they agree, or when either side is unknown.
+    MAL status values: "finished_airing", "currently_airing", "not_yet_aired"
+    AnimeGG status values: "Completed", "Ongoing", "Upcoming" (approximate)
+    """
+    if not anime_status or not mal_status:
+        return True   # can't judge — treat as matching
+
+    STATUS_MAP: dict[str, str] = {
+        "completed":  "finished_airing",
+        "finished":   "finished_airing",
+        "ongoing":    "currently_airing",
+        "airing":     "currently_airing",
+        "upcoming":   "not_yet_aired",
+        "not yet aired": "not_yet_aired",
+    }
+    mapped = STATUS_MAP.get(anime_status.lower().strip())
+    return mapped is None or mapped == mal_status.lower().strip()
+
+
+def _make_result(node: dict, confidence: str) -> dict:
+    """Package a MAL node into the result dict that search_mal returns."""
+    return {
+        "id":           node["id"],
+        "mal_title":    node["title"],
+        "confidence":   confidence,
+        "mal_episodes": node.get("num_episodes"),   # 0 = unknown on MAL side
+        "mal_status":   node.get("status"),
+    }
+
+
+def search_mal(
+    title: str,
+    session: requests.Session,
+    episode_count: int | None = None,
+    anime_status: str | None = None,
+) -> dict | None:
     """
     Query MAL for *title*. Returns:
-        {"id": int, "mal_title": str, "confidence": "exact"|"fuzzy"|"first"}
+        {
+            "id":           int,
+            "mal_title":    str,
+            "confidence":   "exact" | "fuzzy" | "first",
+            "mal_episodes": int | None,
+            "mal_status":   str | None,
+        }
     or None if nothing found after all retries.
+
+    Fuzzy and first-result confidence levels require the MAL episode count to
+    match *episode_count* (when both sides are known and non-zero).
+    Status is used as a secondary signal: a status mismatch downgrades a
+    fuzzy candidate but does not discard it outright.
     """
-    params  = {"q": title, "limit": 5, "fields": "id,title,alternative_titles"}
+    params  = {"q": title, "limit": 5, "fields": "id,title,alternative_titles,num_episodes,status"}
     headers = {"X-MAL-CLIENT-ID": CLIENT_ID}
+
+    def episodes_ok(node: dict) -> bool:
+        """True when episode counts are compatible (missing/0 on either side = OK)."""
+        mal_eps = node.get("num_episodes") or 0
+        src_eps = episode_count or 0
+        if mal_eps == 0 or src_eps == 0:
+            return True           # unknown on one side — can't disqualify
+        return mal_eps == src_eps
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -210,27 +267,60 @@ def search_mal(title: str, session: requests.Session) -> dict | None:
 
             norm_q = normalize(title)
 
-            # ── 1. Exact match ────────────────────────────────────────────────
+            # ── 1. Exact title match (episode count not required) ─────────────
             for item in data:
                 node = item["node"]
                 if any(normalize(t) == norm_q for t in collect_all_titles(node)):
-                    return {"id": node["id"], "mal_title": node["title"],
-                            "confidence": "exact"}
+                    return _make_result(node, "exact")
 
-            # ── 2. Fuzzy (substring) match ────────────────────────────────────
+            # ── 2. Fuzzy (substring) match — episode count MUST match ─────────
+            #
+            # Priority order within fuzzy:
+            #   a) title substring match  +  episodes match  +  status match   → best fuzzy
+            #   b) title substring match  +  episodes match  (status optional)  → accept
+            #   c) title substring match  +  episodes mismatch                  → skip
+            #
+            fuzzy_candidates = []
             for item in data:
                 node = item["node"]
-                if any(
+                title_hit = any(
                     norm_q in normalize(t) or normalize(t) in norm_q
                     for t in collect_all_titles(node)
-                ):
-                    return {"id": node["id"], "mal_title": node["title"],
-                            "confidence": "fuzzy"}
+                )
+                if not title_hit:
+                    continue
+                if not episodes_ok(node):
+                    # Title matched but episode count is wrong — reject
+                    print(
+                        f"    ↳  skipping '{node['title']}' "
+                        f"(ep mismatch: source={episode_count} mal={node.get('num_episodes')})"
+                    )
+                    continue
+                status_hit = _status_matches(anime_status, node.get("status"))
+                fuzzy_candidates.append((node, status_hit))
 
-            # ── 3. First-result fallback ──────────────────────────────────────
-            first = data[0]["node"]
-            return {"id": first["id"], "mal_title": first["title"],
-                    "confidence": "first"}
+            if fuzzy_candidates:
+                # Prefer candidates where status also matches
+                fuzzy_candidates.sort(key=lambda x: (0 if x[1] else 1))
+                best_node, _ = fuzzy_candidates[0]
+                return _make_result(best_node, "fuzzy")
+
+            # ── 3. First-result fallback — episode count MUST match ───────────
+            #
+            # Walk through results in order; use the first one whose episode
+            # count agrees.  If none agree, return None (→ not_matching).
+            #
+            for item in data:
+                node = item["node"]
+                if episodes_ok(node):
+                    return _make_result(node, "first")
+
+            # All candidates have mismatched episode counts
+            print(
+                f"    ↳  all {len(data)} MAL results have episode-count mismatches "
+                f"(source={episode_count}) — marking not found"
+            )
+            return None
 
         except requests.RequestException as exc:
             print(f"    ⚠  Network error (attempt {attempt}): {exc}")
@@ -256,11 +346,15 @@ def build_entry(serial_no: int, anime: dict, result: dict | None) -> dict:
         "description":   anime.get("description"),
     }
     if result:
-        base["mal_id"]    = result["id"]
-        base["mal_title"] = result["mal_title"]
+        base["mal_id"]       = result["id"]
+        base["mal_title"]    = result["mal_title"]
+        base["mal_episodes"] = result.get("mal_episodes")
+        base["mal_status"]   = result.get("mal_status")
     else:
-        base["mal_id"]    = None
-        base["mal_title"] = None
+        base["mal_id"]       = None
+        base["mal_title"]    = None
+        base["mal_episodes"] = None
+        base["mal_status"]   = None
     return base
 
 
@@ -327,7 +421,9 @@ def main() -> None:
 
         print(f"[{real_idx:>4}/{total}] 🔎  '{title}' …", end=" ", flush=True)
 
-        result = search_mal(title, session)
+        episode_count = anime.get("episode_count")
+        anime_status  = anime.get("status")
+        result = search_mal(title, session, episode_count=episode_count, anime_status=anime_status)
         actually_processed += 1
 
         if result is None:
@@ -343,12 +439,18 @@ def main() -> None:
         elif result["confidence"] == "fuzzy":
             entry = build_entry(serial_no, anime, result)
             fuzzy_matches.append(entry)
-            print(f"🟡  fuzzy      mal_id={result['id']}  → '{result['mal_title']}'")
+            print(
+                f"🟡  fuzzy      mal_id={result['id']}  → '{result['mal_title']}'"
+                f"  [eps src={episode_count} mal={result.get('mal_episodes')}]"
+            )
 
         else:  # "first"
             entry = build_entry(serial_no, anime, result)
             first_fallback.append(entry)
-            print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'")
+            print(
+                f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'"
+                f"  [eps src={episode_count} mal={result.get('mal_episodes')}]"
+            )
 
         # Mark as processed immediately so partial runs are recoverable
         if uri:
