@@ -28,8 +28,8 @@ from pathlib import Path
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CLIENT_ID      = os.environ.get("MAL_CLIENT_ID", "").strip()
-INPUT_JSON_URL = os.environ.get("INPUT_JSON_URL", "").strip()
+CLIENT_ID      = os.environ.get("MAL_CLIENT_ID", "b0f57250436db633080e10767f2dab54").strip()
+INPUT_JSON_URL = os.environ.get("INPUT_JSON_URL", "https://raw.githubusercontent.com/ytbro8326-sudo/mal_mapper/refs/heads/main/animegg_all_series1.json").strip()
 
 MAL_SEARCH_URL   = "https://api.myanimelist.net/v2/anime"
 RATE_LIMIT_DELAY = 0.5   # seconds between MAL requests  (~2 req/s, limit is 3)
@@ -180,10 +180,6 @@ def save(path: Path, records: list[dict]) -> None:
 
 def main() -> None:
     # ── Pre-flight checks ─────────────────────────────────────────────────────
-    if not CLIENT_ID:
-        sys.exit("❌  MAL_CLIENT_ID environment variable is not set.")
-    if not INPUT_JSON_URL:
-        sys.exit("❌  INPUT_JSON_URL environment variable is not set.")
 
     session    = requests.Session()
     anime_list = load_anime_list(INPUT_JSON_URL, session)
