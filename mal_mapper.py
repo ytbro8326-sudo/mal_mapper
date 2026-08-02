@@ -417,6 +417,11 @@ def _episode_count_ok(anime_episode_count: int | None, mal_episodes: int | None)
     return mal_episodes >= anime_episode_count
 
 
+def _is_not_yet_aired(mal_status: str | None) -> bool:
+    """True when MAL reports this candidate as not having aired yet."""
+    return bool(mal_status) and mal_status.lower().strip() == "not_yet_aired"
+
+
 def _best_candidate(
     data: list[dict],
     query_titles: list[str],
@@ -427,12 +432,18 @@ def _best_candidate(
     Score every MAL candidate in *data* against every title in *query_titles*
     (the best pairing per node wins) using the blended `similarity()` score.
     Returns (best_node, best_score) — best_node is None if nothing scored > 0
-    or nothing survives the episode-count filter.
+    or nothing survives the hard filters below.
 
-    Episode count is a HARD filter here: any candidate whose MAL episode
-    count is smaller than the source's episode_count is rejected outright,
-    no matter how well the title matches (see `_episode_count_ok`). Status
-    agreement is used only to break ties between candidates that end up
+    Two HARD filters are applied before a candidate can be selected at all,
+    no matter how well its title matches:
+      • Episode count: MAL's episode count must be >= the source's
+        episode_count (see `_episode_count_ok`).
+      • Airing status: a candidate MAL marks "not_yet_aired" is rejected
+        outright — a series that hasn't aired yet can never be the correct
+        match for an Ongoing/Completed source entry.
+
+    Status agreement (Ongoing↔currently_airing, Completed↔finished_airing)
+    is used only to break ties between remaining candidates that end up
     with the exact same top score.
     """
     scored: list[tuple[float, bool, dict]] = []
@@ -453,6 +464,9 @@ def _best_candidate(
 
         if not _episode_count_ok(anime_episode_count, node.get("num_episodes")):
             continue   # e.g. a 1-episode movie can't match a 1182-episode series
+
+        if _is_not_yet_aired(node.get("status")):
+            continue   # never accept a not-yet-aired candidate
 
         status_hit = _status_matches(anime_status, node.get("status"))
         scored.append((node_score, status_hit, node))
