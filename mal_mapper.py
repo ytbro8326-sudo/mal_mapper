@@ -349,7 +349,7 @@ def _make_result(node: dict, confidence: str, score: float) -> dict:
         "mal_url":      _mal_url(node["id"]),
         "confidence":   confidence,
         "match_score":  round(score, 1),
-        "mal_episodes": node.get("num_episodes"),   # informational only, not used for matching
+        "mal_episodes": node.get("num_episodes"),   # must be >= source episode_count (see _episode_count_ok)
         "mal_status":   node.get("status"),
     }
 
@@ -391,19 +391,43 @@ def _query_mal(
     return []
 
 
+def _episode_count_ok(anime_episode_count: int | None, mal_episodes: int | None) -> bool:
+    """
+    Hard filter: a candidate is only acceptable if MAL's episode count is
+    EQUAL TO or GREATER THAN the source's episode_count.
+
+    This exists specifically to reject spin-off movies/OVAs/specials that
+    share a title substring with a long-running series — e.g. a 1-episode
+    "Meitantei Conan Movie 14" must never be accepted as a match for the
+    1182-episode ongoing "Detective Conan" TV series, even though the title
+    scores extremely high on pure text similarity.
+
+    If either side is unknown (0 / None) we can't judge it, so we allow it
+    through — MAL frequently reports num_episodes=0 for an ongoing series
+    whose final episode count isn't fixed yet.
+    """
+    if not anime_episode_count or not mal_episodes:
+        return True   # unknown on either side — can't disqualify
+    return mal_episodes >= anime_episode_count
+
+
 def _best_candidate(
     data: list[dict],
     query_titles: list[str],
     anime_status: str | None,
+    anime_episode_count: int | None = None,
 ) -> tuple[dict | None, float]:
     """
     Score every MAL candidate in *data* against every title in *query_titles*
     (the best pairing per node wins) using the blended `similarity()` score.
-    Returns (best_node, best_score) — best_node is None if nothing scored > 0.
+    Returns (best_node, best_score) — best_node is None if nothing scored > 0
+    or nothing survives the episode-count filter.
 
-    Status agreement is used ONLY to break ties between candidates that end
-    up with the exact same top score; it never filters anything out, and
-    episode counts are not consulted at all.
+    Episode count is a HARD filter here: any candidate whose MAL episode
+    count is smaller than the source's episode_count is rejected outright,
+    no matter how well the title matches (see `_episode_count_ok`). Status
+    agreement is used only to break ties between candidates that end up
+    with the exact same top score.
     """
     scored: list[tuple[float, bool, dict]] = []
 
@@ -420,6 +444,9 @@ def _best_candidate(
 
         if node_score <= 0:
             continue
+
+        if not _episode_count_ok(anime_episode_count, node.get("num_episodes")):
+            continue   # e.g. a 1-episode movie can't match a 1182-episode series
 
         status_hit = _status_matches(anime_status, node.get("status"))
         scored.append((node_score, status_hit, node))
@@ -438,6 +465,7 @@ def search_mal(
     alternate_title: str | None,
     session: requests.Session,
     anime_status: str | None = None,
+    episode_count: int | None = None,
 ) -> dict | None:
     """
     Query MAL for an anime using a two-tier fuzzy strategy. Returns:
@@ -446,10 +474,10 @@ def search_mal(
             "mal_title":    str,
             "confidence":   "exact" | "fuzzy" | "first",
             "match_score":  float,       # 0-100, blended fuzzy score
-            "mal_episodes": int | None,  # informational only
+            "mal_episodes": int | None,
             "mal_status":   str | None,
         }
-    or None if MAL returned absolutely nothing for the primary title.
+    or None if MAL returned absolutely nothing usable for the primary title.
 
     Tier 1 — search MAL with the primary `title`; score results against
       `title` alone. Score ≥ 99 → "exact". 60 ≤ score < 99 → "fuzzy".
@@ -459,10 +487,16 @@ def search_mal(
       the combined result pool against ALL known titles (primary +
       alternates). Same 60/99 thresholds apply.
 
-    Fallback — if neither tier clears 60, the single top MAL result from
-      Tier 1's query is returned as confidence "first" (best-effort guess).
+    Fallback — if neither tier clears 60, the best-scoring candidate that
+      still survives the episode-count filter is returned as confidence
+      "first". If nothing survives that filter either, no result is
+      returned rather than handing back an obviously-wrong movie/OVA.
 
-    Episode counts are never consulted. Status is used only to break ties.
+    Episode count is a HARD filter in every tier: a candidate whose MAL
+    episode count is smaller than the source's episode_count is rejected
+    outright (see `_episode_count_ok`) — this is what stops a 1-episode
+    movie from being matched to a 1000+ episode ongoing series. Status is
+    used only to break ties between equally-scored candidates.
     """
     headers = {"X-MAL-CLIENT-ID": CLIENT_ID}
 
@@ -470,7 +504,7 @@ def search_mal(
     data1 = _query_mal(title, session, headers, limit=15)
 
     if data1:
-        node1, score1 = _best_candidate(data1, [title], anime_status)
+        node1, score1 = _best_candidate(data1, [title], anime_status, episode_count)
         if node1 and score1 >= EXACT_MIN_SCORE:
             return _make_result(node1, "exact", score1)
         if node1 and score1 >= FUZZY_MIN_SCORE:
@@ -489,19 +523,25 @@ def search_mal(
             combined_data.extend(data_alt)
 
         if combined_data:
-            node2, score2 = _best_candidate(combined_data, all_known_titles, anime_status)
+            node2, score2 = _best_candidate(combined_data, all_known_titles, anime_status, episode_count)
             if node2 and score2 >= EXACT_MIN_SCORE:
                 return _make_result(node2, "exact", score2)
             if node2 and score2 >= FUZZY_MIN_SCORE:
                 return _make_result(node2, "fuzzy", score2)
 
-    # ── Fallback: first raw result from the primary title query ─────────────
-    if data1:
-        top_node = data1[0]["node"]
-        print(f"    ↳  no match ≥ {FUZZY_MIN_SCORE:.0f}% — using top MAL result as fallback")
-        return _make_result(top_node, "first", 0.0)
+    # ── Fallback: best remaining candidate that still passes the episode filter ──
+    fallback_pool  = combined_data if alt_titles else data1
+    fallback_query = ([title] + alt_titles) if alt_titles else [title]
 
-    print("    ↳  MAL returned nothing at all — marking not found")
+    if fallback_pool:
+        node_fb, score_fb = _best_candidate(fallback_pool, fallback_query, anime_status, episode_count)
+        if node_fb:
+            print(f"    ↳  no match ≥ {FUZZY_MIN_SCORE:.0f}% — using best episode-consistent result as fallback")
+            return _make_result(node_fb, "first", score_fb)
+
+    # Nothing survived the episode filter at all — better to report "not found"
+    # than to hand back an obviously-wrong movie/OVA/special.
+    print("    ↳  no candidate with a consistent episode count — marking not found")
     return None
 
 
@@ -604,8 +644,9 @@ def main() -> None:
 
         print(f"[{real_idx:>4}/{total}] 🔎  '{title}' …", end=" ", flush=True)
 
-        anime_status = anime.get("status")
-        result = search_mal(title, alt_title, session, anime_status=anime_status)
+        anime_status  = anime.get("status")
+        episode_count = anime.get("episode_count")
+        result = search_mal(title, alt_title, session, anime_status=anime_status, episode_count=episode_count)
         actually_processed += 1
 
         if result is None:
