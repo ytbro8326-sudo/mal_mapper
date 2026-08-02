@@ -1,0 +1,78 @@
+[
+  {
+    "serial_no": 3,
+    "title": "Detective Conan",
+    "url": "https://www.animegg.org/series/detectiveconan",
+    "episode_count": 1182,
+    "status": "Ongoing",
+    "genres": [
+      "Adventure"
+    ],
+    "description": "Shinichi Kudou, a high school student of astounding talent in detective work, is well known for having solved several challenging cases. One day, when Shinichi spots two suspicious men and decides to...",
+    "mal_id": null,
+    "mal_title": null,
+    "mal_episodes": null,
+    "mal_status": null
+  },
+  {
+    "serial_no": 7,
+    "title": "Naruto",
+    "url": "https://www.animegg.org/series/naruto",
+    "episode_count": 220,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Martial Arts",
+      "Super Power",
+      "Comedy",
+      "Shounen"
+    ],
+    "description": "Before Naruto was born, a great demon fox had attacked the Hidden Leaf Village. A man known as the 4th Hokage sealed the demon inside the newly born Naruto, causing him to unknowingly grow up detested...",
+    "mal_id": null,
+    "mal_title": null,
+    "mal_episodes": null,
+    "mal_status": null
+  },
+  {
+    "serial_no": 8,
+    "title": "Fairy Tail",
+    "url": "https://www.animegg.org/series/fairy-tail",
+    "episode_count": 175,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Fantasy",
+      "Magic",
+      "Comedy",
+      "Shounen"
+    ],
+    "description": "Lucy is a 17-year-old girl, who wants to be a full-fledged mage. One day when visiting Harujion Town, she meets Natsu, a young man who gets sick easily by any type of transportation. But Natsu isnt...",
+    "mal_id": null,
+    "mal_title": null,
+    "mal_episodes": null,
+    "mal_status": null
+  },
+  {
+    "serial_no": 18,
+    "title": "Prince of Tennis",
+    "url": "https://www.animegg.org/series/prince-of-tennis",
+    "episode_count": 171,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Comedy",
+      "Shounen",
+      "Sports",
+      "Middle School",
+      "School Life",
+      "Clubs",
+      "Tennis"
+    ],
+    "description": "Echizen Ryoma is a young tennis prodigy who has won 4 consecutive tennis championships but who constantly lies in the shadow of his father, a former pro tennis player. He joins the Seishun Gakuen...",
+    "mal_id": null,
+    "mal_title": null,
+    "mal_episodes": null,
+    "mal_status": null
+  }
+]
