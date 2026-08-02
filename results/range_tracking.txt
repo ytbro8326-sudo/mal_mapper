@@ -1,0 +1,4 @@
+# Range Tracking Log — MAL ID Mapper
+# Format: TIMESTAMP | RANGE_START–RANGE_END | processed | skipped | total_in_range
+#
+2026-08-02 20:36 UTC | 1–100 | processed=100 | skipped=0 | total_in_range=100
