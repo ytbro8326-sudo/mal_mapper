@@ -1,5 +1,6 @@
 [
   {
+    "serial_no": 3,
     "title": "Detective Conan",
     "uri": "detectiveconan",
     "url": "https://www.animegg.org/series/detectiveconan",
@@ -14,6 +15,7 @@
     "mal_title": "Meitantei Conan Movie 14: Tenkuu no Lost Ship"
   },
   {
+    "serial_no": 7,
     "title": "Naruto",
     "uri": "naruto",
     "url": "https://www.animegg.org/series/naruto",
@@ -32,6 +34,7 @@
     "mal_title": "Naruto: Shippuuden"
   },
   {
+    "serial_no": 8,
     "title": "Fairy Tail",
     "uri": "fairy-tail",
     "url": "https://www.animegg.org/series/fairy-tail",
@@ -51,6 +54,7 @@
     "mal_title": "Fairy Tail (2014)"
   },
   {
+    "serial_no": 9,
     "title": "Black Clover (TV)",
     "uri": "black-clover-tv",
     "url": "https://www.animegg.org/series/black-clover-tv",
@@ -69,6 +73,7 @@
     "mal_title": "Black Clover"
   },
   {
+    "serial_no": 18,
     "title": "Prince of Tennis",
     "uri": "prince-of-tennis",
     "url": "https://www.animegg.org/series/prince-of-tennis",

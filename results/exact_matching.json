@@ -1,5 +1,6 @@
 [
   {
+    "serial_no": 1,
     "title": "One Piece",
     "uri": "one-piece",
     "url": "https://www.animegg.org/series/one-piece",
@@ -14,6 +15,7 @@
     "mal_title": "One Piece Movie 01"
   },
   {
+    "serial_no": 2,
     "title": "Naruto Shippuden",
     "uri": "naruto-shippuden",
     "url": "https://www.animegg.org/series/naruto-shippuden",
@@ -32,6 +34,7 @@
     "mal_title": "Naruto: Shippuuden"
   },
   {
+    "serial_no": 4,
     "title": "Bleach",
     "uri": "bleach",
     "url": "https://www.animegg.org/series/bleach",
@@ -50,6 +53,7 @@
     "mal_title": "Bleach"
   },
   {
+    "serial_no": 5,
     "title": "Boruto: Naruto Next Generations",
     "uri": "boruto-naruto-next-generations",
     "url": "https://www.animegg.org/series/boruto-naruto-next-generations",
@@ -68,6 +72,7 @@
     "mal_title": "Boruto: Naruto Next Generations"
   },
   {
+    "serial_no": 6,
     "title": "Dragon Ball Super",
     "uri": "dragon-ball-super",
     "url": "https://www.animegg.org/series/dragon-ball-super",
@@ -88,6 +93,7 @@
     "mal_title": "Dragon Ball Super"
   },
   {
+    "serial_no": 10,
     "title": "Dragon Ball Z",
     "uri": "dragonball-z",
     "url": "https://www.animegg.org/series/dragonball-z",
@@ -108,6 +114,7 @@
     "mal_title": "Dragon Ball Z"
   },
   {
+    "serial_no": 11,
     "title": "Hunter x Hunter (2011)",
     "uri": "hunter-x-hunter-2011",
     "url": "https://www.animegg.org/series/hunter-x-hunter-2011",
@@ -127,6 +134,7 @@
     "mal_title": "Hunter x Hunter (2011)"
   },
   {
+    "serial_no": 12,
     "title": "Fairy Tail (2014)",
     "uri": "fairy-tail-2014",
     "url": "https://www.animegg.org/series/fairy-tail-2014",
@@ -146,6 +154,7 @@
     "mal_title": "Fairy Tail (2014)"
   },
   {
+    "serial_no": 13,
     "title": "Dragon Ball",
     "uri": "dragon-ball",
     "url": "https://www.animegg.org/series/dragon-ball",
@@ -165,6 +174,7 @@
     "mal_title": "Dragon Ball"
   },
   {
+    "serial_no": 14,
     "title": "Pokemon",
     "uri": "pokemon",
     "url": "https://www.animegg.org/series/pokemon",
@@ -183,6 +193,7 @@
     "mal_title": "Pokemon"
   },
   {
+    "serial_no": 15,
     "title": "Gintama",
     "uri": "gintama",
     "url": "https://www.animegg.org/series/gintama",
@@ -198,10 +209,11 @@
       "Scifi"
     ],
     "description": "Life isn't easy in feudal Japan... especially since the aliens landed and conquered everything! Oh sure, the new health care is great, but the public ban on the use of swords has left a lot of...",
-    "mal_id": 9969,
-    "mal_title": "Gintama'"
+    "mal_id": 28977,
+    "mal_title": "Gintama°"
   },
   {
+    "serial_no": 16,
     "title": "The Seven Deadly Sins",
     "uri": "the-seven-deadly-sins",
     "url": "https://www.animegg.org/series/the-seven-deadly-sins",
@@ -220,6 +232,7 @@
     "mal_title": "Nanatsu no Taizai"
   },
   {
+    "serial_no": 17,
     "title": "Inuyasha",
     "uri": "nuyasha",
     "url": "https://www.animegg.org/series/nuyasha",
@@ -249,6 +262,7 @@
     "mal_title": "InuYasha"
   },
   {
+    "serial_no": 19,
     "title": "Attack on Titan",
     "uri": "attack-on-titan",
     "url": "https://www.animegg.org/series/attack-on-titan",
@@ -266,6 +280,7 @@
     "mal_title": "Shingeki no Kyojin"
   },
   {
+    "serial_no": 20,
     "title": "Yu-Gi-Oh!",
     "uri": "yu-gi-oh",
     "url": "https://www.animegg.org/series/yu-gi-oh",
