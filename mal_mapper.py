@@ -51,11 +51,17 @@ Status handling
     AnimeGG's `status` ("Ongoing"/"Completed"/"Upcoming") is mapped to MAL's
     vocabulary (`currently_airing`/`finished_airing`/`not_yet_aired`) and is
     used ONLY to break ties when two candidates score equally on title —
-    it never disqualifies a title match by itself.
+    it never disqualifies a title match by itself. (Episode count, above,
+    IS a hard disqualifier — the two work together but are not the same rule.)
 
-Episode counts are NOT used for matching at all (per requirement) — the
-source's `episode_count` is still carried through into the output purely
-for reference.
+Episode-count filter (hard rule)
+    A MAL candidate is only acceptable if its `num_episodes` is EQUAL TO or
+    GREATER THAN the source's `episode_count` (unknown/0 on either side is
+    allowed through, since it can't be judged). This is what stops a
+    1-episode movie/OVA/special from being wrongly matched to a
+    1000+-episode ongoing series just because the title looks similar —
+    e.g. "Meitantei Conan Movie 14" (1 ep) is now correctly rejected as a
+    match for the 1182-episode ongoing "Detective Conan" series.
 
 Tracking files (auto-created / updated in results/):
     results/already_processed_items.txt  ← URL slugs already done; skipped on re-run
