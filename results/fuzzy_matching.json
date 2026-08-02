@@ -1,0 +1,67 @@
+[
+  {
+    "serial_no": 3,
+    "title": "Detective Conan",
+    "alternate_title": "Case Closed, Meitantei Conan, 名探偵コナン",
+    "url": "https://www.animegg.org/series/detectiveconan",
+    "episode_count": 1182,
+    "status": "Ongoing",
+    "genres": [
+      "Adventure"
+    ],
+    "description": "Shinichi Kudou, a high school student of astounding talent in detective work, is well known for having solved several challenging cases. One day, when Shinichi spots two suspicious men and decides to...",
+    "mal_id": 6467,
+    "mal_title": "Meitantei Conan Movie 14: Tenkuu no Lost Ship",
+    "mal_url": "https://myanimelist.net/anime/6467",
+    "match_score": 95.0,
+    "mal_episodes": 1,
+    "mal_status": "finished_airing"
+  },
+  {
+    "serial_no": 9,
+    "title": "Black Clover (TV)",
+    "alternate_title": "Black Clover, ブラッククローバー",
+    "url": "https://www.animegg.org/series/black-clover-tv",
+    "episode_count": 170,
+    "status": "Ongoing",
+    "genres": [
+      "Action",
+      "Fantasy",
+      "Magic",
+      "Comedy",
+      "Shounen"
+    ],
+    "description": "Asta and Yuno were abandoned together at the same church and have been inseparable since. As children, they promised that they would compete against each other to see who would become the next Emperor...",
+    "mal_id": 34572,
+    "mal_title": "Black Clover",
+    "mal_url": "https://myanimelist.net/anime/34572",
+    "match_score": 98.0,
+    "mal_episodes": 170,
+    "mal_status": "finished_airing"
+  },
+  {
+    "serial_no": 18,
+    "title": "Prince of Tennis",
+    "alternate_title": "Tennis no Ouji-sama,テニスの王子様",
+    "url": "https://www.animegg.org/series/prince-of-tennis",
+    "episode_count": 171,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Comedy",
+      "Shounen",
+      "Sports",
+      "Middle School",
+      "School Life",
+      "Clubs",
+      "Tennis"
+    ],
+    "description": "Echizen Ryoma is a young tennis prodigy who has won 4 consecutive tennis championships but who constantly lies in the shadow of his father, a former pro tennis player. He joins the Seishun Gakuen...",
+    "mal_id": 22,
+    "mal_title": "Tennis no Oujisama",
+    "mal_url": "https://myanimelist.net/anime/22",
+    "match_score": 98.0,
+    "mal_episodes": 178,
+    "mal_status": "finished_airing"
+  }
+]
