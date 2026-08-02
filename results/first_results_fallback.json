@@ -1,0 +1,47 @@
+[
+  {
+    "serial_no": 5,
+    "title": "Boruto: Naruto Next Generations",
+    "alternate_title": "BORUTO -NARUTO NEXT GENERATIONS-",
+    "url": "https://www.animegg.org/series/boruto-naruto-next-generations",
+    "episode_count": 294,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Martial Arts",
+      "Super Power",
+      "Shounen"
+    ],
+    "description": "Naruto was a young shinobi with an incorrigible knack for mischief. He achieved his dream to become the greatest ninja in the village and his face sits atop the Hokage monument. But this is not his...",
+    "mal_id": 1735,
+    "mal_title": "Naruto: Shippuuden",
+    "mal_url": "https://myanimelist.net/anime/1735",
+    "match_score": 49.1,
+    "mal_episodes": 500,
+    "mal_status": "finished_airing"
+  },
+  {
+    "serial_no": 15,
+    "title": "Gintama",
+    "alternate_title": "Gin Tama, Silver Soul,銀魂",
+    "url": "https://www.animegg.org/series/gintama",
+    "episode_count": 263,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Drama",
+      "Fantasy",
+      "Comedy",
+      "Scifi"
+    ],
+    "description": "Life isn't easy in feudal Japan... especially since the aliens landed and conquered everything! Oh sure, the new health care is great, but the public ban on the use of swords has left a lot of...",
+    "mal_id": 1199,
+    "mal_title": "Nintama Rantarou",
+    "mal_url": "https://myanimelist.net/anime/1199",
+    "match_score": 52.2,
+    "mal_episodes": 0,
+    "mal_status": "currently_airing"
+  }
+]
