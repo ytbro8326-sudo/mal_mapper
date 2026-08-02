@@ -1,1 +1,92 @@
-[]
+[
+  {
+    "title": "Detective Conan",
+    "uri": "detectiveconan",
+    "url": "https://www.animegg.org/series/detectiveconan",
+    "thumbnail_url": "https://vidcache.net:8161/static/cdb12cf06655f97dbe4a143f280c5b8c9c4293fc/jpeg",
+    "episode_count": 1182,
+    "status": "Ongoing",
+    "genres": [
+      "Adventure"
+    ],
+    "description": "Shinichi Kudou, a high school student of astounding talent in detective work, is well known for having solved several challenging cases. One day, when Shinichi spots two suspicious men and decides to...",
+    "mal_id": 6467,
+    "mal_title": "Meitantei Conan Movie 14: Tenkuu no Lost Ship"
+  },
+  {
+    "title": "Naruto",
+    "uri": "naruto",
+    "url": "https://www.animegg.org/series/naruto",
+    "thumbnail_url": "https://vidcache.net:8161/static/cdc2259facb6289570e81a4e94bb5aa6dad298fc/jpeg",
+    "episode_count": 220,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Martial Arts",
+      "Super Power",
+      "Comedy",
+      "Shounen"
+    ],
+    "description": "Before Naruto was born, a great demon fox had attacked the Hidden Leaf Village. A man known as the 4th Hokage sealed the demon inside the newly born Naruto, causing him to unknowingly grow up detested...",
+    "mal_id": 1735,
+    "mal_title": "Naruto: Shippuuden"
+  },
+  {
+    "title": "Fairy Tail",
+    "uri": "fairy-tail",
+    "url": "https://www.animegg.org/series/fairy-tail",
+    "thumbnail_url": "https://vidcache.net:8161/static/cc323728e2184d6c233bc4a8f0b4d044865deeec/jpeg",
+    "episode_count": 175,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Fantasy",
+      "Magic",
+      "Comedy",
+      "Shounen"
+    ],
+    "description": "Lucy is a 17-year-old girl, who wants to be a full-fledged mage. One day when visiting Harujion Town, she meets Natsu, a young man who gets sick easily by any type of transportation. But Natsu isnt...",
+    "mal_id": 22043,
+    "mal_title": "Fairy Tail (2014)"
+  },
+  {
+    "title": "Black Clover (TV)",
+    "uri": "black-clover-tv",
+    "url": "https://www.animegg.org/series/black-clover-tv",
+    "thumbnail_url": "https://vidcache.net:8161/static/b759e355b7ed1e929d89db80dd987d54fe5e5a85/jpeg",
+    "episode_count": 170,
+    "status": "Ongoing",
+    "genres": [
+      "Action",
+      "Fantasy",
+      "Magic",
+      "Comedy",
+      "Shounen"
+    ],
+    "description": "Asta and Yuno were abandoned together at the same church and have been inseparable since. As children, they promised that they would compete against each other to see who would become the next Emperor...",
+    "mal_id": 34572,
+    "mal_title": "Black Clover"
+  },
+  {
+    "title": "Prince of Tennis",
+    "uri": "prince-of-tennis",
+    "url": "https://www.animegg.org/series/prince-of-tennis",
+    "thumbnail_url": "https://vidcache.net:8161/static/e08b5a743d40ec7f1a4e2e1e46579743e0f738e5/jpeg",
+    "episode_count": 171,
+    "status": "Completed",
+    "genres": [
+      "Action",
+      "Comedy",
+      "Shounen",
+      "Sports",
+      "Middle School",
+      "School Life",
+      "Clubs",
+      "Tennis"
+    ],
+    "description": "Echizen Ryoma is a young tennis prodigy who has won 4 consecutive tennis championships but who constantly lies in the shadow of his father, a former pro tennis player. He joins the Seishun Gakuen...",
+    "mal_id": 22,
+    "mal_title": "Tennis no Oujisama"
+  }
+]
