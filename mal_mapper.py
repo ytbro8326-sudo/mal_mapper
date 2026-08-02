@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CLIENT_ID = os.environ.get("MAL_CLIENT_ID", "").strip()
+CLIENT_ID = os.environ.get("MAL_CLIENT_ID", "b0f57250436db633080e10767f2dab54").strip()
 INPUT_JSON_URL = os.environ.get(
     "INPUT_JSON_URL",
     "https://raw.githubusercontent.com/ytbro8326-sudo/mal_mapper/refs/heads/main/animegg_all_series1.json",
@@ -228,13 +228,6 @@ def main() -> None:
                         help="Ignore existing results and start from scratch.")
     args = parser.parse_args()
 
-    # ── Validate CLIENT_ID before doing anything ───────────────────────────────
-    if not CLIENT_ID:
-        sys.exit(
-            "❌  MAL_CLIENT_ID is not set.\n"
-            "    Set it as a GitHub Actions secret named MAL_CLIENT_ID\n"
-            "    or export it locally:  export MAL_CLIENT_ID=your_id_here"
-        )
     # Quick sanity-check: hit MAL with a known title before processing 11k entries
     print(f"🔑  Client ID loaded ({CLIENT_ID[:6]}…{'*' * (len(CLIENT_ID)-6)})")
     print("🧪  Testing MAL API connectivity …", end=" ", flush=True)
