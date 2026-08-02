@@ -38,40 +38,15 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      # ── Pull latest result files + progress.json from the repo ──────────────
-      # The script reads results/progress.json on startup to detect a prior
-      # partial run and resume from the last checkpoint.  Because we commit
-      # those files back at the end of each run (step below), they are already
-      # present in the checked-out repo.  No extra cache action is needed.
-      - name: Show current progress (if any)
-        run: |
-          if [ -f results/progress.json ]; then
-            echo "── Existing progress.json ──────────────────────────"
-            cat results/progress.json | python3 -c "
-          import json, sys
-          d = json.load(sys.stdin)
-          print(f'  last_index : {d.get(\"last_index\", 0)}')
-          print(f'  processed  : {len(d.get(\"processed\", []))} titles')
-          "
-          else
-            echo "No progress.json found — this will be a fresh run."
-          fi
-
       # Override INPUT_JSON_URL only if manually supplied
       - name: Set INPUT_JSON_URL (if provided via dispatch)
         if: github.event.inputs.input_json_url != ''
         run: echo "INPUT_JSON_URL=${{ github.event.inputs.input_json_url }}" >> "$GITHUB_ENV"
 
       - name: Run MAL mapper
-        env:
-          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
         run: python mal_mapper.py
 
-      # ── Commit result files + progress tracker ───────────────────────────────
-      # We commit results/ after every run so that:
-      #   • Partial results are never lost (the script already wrote checkpoints).
-      #   • The next scheduled / manual run can resume from the last checkpoint.
-      - name: Commit result files and progress
+      - name: Commit result files
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -79,21 +54,12 @@ jobs:
           git add results/exact_matching.json \
                   results/fuzzy_matching.json \
                   results/first_results_fallback.json \
-                  results/not_matching.json \
-                  results/progress.json
+                  results/not_matching.json
 
           if git diff --cached --quiet; then
             echo "No changes to commit — result files are identical."
           else
             TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-
-            # Count entries in each bucket for the commit message
-            EXACT=$(python3 -c "import json; print(len(json.load(open('results/exact_matching.json'))))" 2>/dev/null || echo "?")
-            FUZZY=$(python3 -c "import json; print(len(json.load(open('results/fuzzy_matching.json'))))" 2>/dev/null || echo "?")
-            FIRST=$(python3 -c "import json; print(len(json.load(open('results/first_results_fallback.json'))))" 2>/dev/null || echo "?")
-            NONE=$(python3  -c "import json; print(len(json.load(open('results/not_matching.json'))))" 2>/dev/null || echo "?")
-            LAST=$(python3  -c "import json; print(json.load(open('results/progress.json')).get('last_index',0))" 2>/dev/null || echo "?")
-
-            git commit -m "chore: MAL results @ entry ${LAST} [${TIMESTAMP}] — ✅${EXACT} 🟡${FUZZY} 🟠${FIRST} ❌${NONE}"
+            git commit -m "chore: update MAL ID results [${TIMESTAMP}]"
             git push
           fi
