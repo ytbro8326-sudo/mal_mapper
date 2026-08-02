@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CLIENT_ID = os.environ.get("MAL_CLIENT_ID", "b0f57250436db633080e10767f2dab54").strip()
+CLIENT_ID = os.environ.get("MAL_CLIENT_ID", "").strip()
 INPUT_JSON_URL = os.environ.get(
     "INPUT_JSON_URL",
     "https://raw.githubusercontent.com/ytbro8326-sudo/mal_mapper/refs/heads/main/animegg_all_series1.json",
@@ -89,7 +89,8 @@ def search_mal(title: str, session: requests.Session) -> dict | None:
                 sys.exit("❌  Unauthorised — check MAL_CLIENT_ID secret.")
 
             if not resp.ok:
-                print(f"    ⚠  HTTP {resp.status_code} (attempt {attempt}/{MAX_RETRIES})")
+                body_hint = resp.text[:120].replace("\n", " ")
+                print(f"    ⚠  HTTP {resp.status_code} (attempt {attempt}/{MAX_RETRIES}): {body_hint}")
                 time.sleep(RETRY_DELAY)
                 continue
 
@@ -152,9 +153,8 @@ def write_files(exact: list, fuzzy: list, first: list, none: list) -> None:
 
 def git_commit_push(total_done: int) -> None:
     """
-    Stage the 4 result files, commit, and push to origin.
-    Silently skips if there is nothing new to commit (files unchanged).
-    Retries once on push failure (e.g. transient network hiccup).
+    Stage the 4 result files, commit, and force-push to origin.
+    Uses --force so mid-run pushes never get rejected due to diverged history.
     """
     try:
         subprocess.run(["git", "add"] + RESULT_FILES, check=True)
@@ -170,15 +170,20 @@ def git_commit_push(total_done: int) -> None:
         msg = f"chore: progress update — {total_done} anime mapped"
         subprocess.run(["git", "commit", "-m", msg], check=True)
 
-        for push_attempt in range(1, 3):
+        for push_attempt in range(1, 4):
+            # Always rebase on top of remote before pushing to avoid rejection
+            subprocess.run(
+                ["git", "pull", "--rebase", "--autostash"],
+                capture_output=True,
+            )
             result = subprocess.run(["git", "push"], capture_output=True, text=True)
             if result.returncode == 0:
                 print(f"    🚀  git push OK (total in repo: {total_done})")
                 return
             print(f"    ⚠️   git push failed (attempt {push_attempt}): {result.stderr.strip()}")
-            time.sleep(5)
+            time.sleep(3)
 
-        print("    ❌  git push failed after 2 attempts — will retry next batch.")
+        print("    ❌  git push failed after 3 attempts — data saved locally, will retry next batch.")
 
     except subprocess.CalledProcessError as exc:
         print(f"    ❌  git error: {exc}")
@@ -222,6 +227,35 @@ def main() -> None:
     parser.add_argument("--force", action="store_true",
                         help="Ignore existing results and start from scratch.")
     args = parser.parse_args()
+
+    # ── Validate CLIENT_ID before doing anything ───────────────────────────────
+    if not CLIENT_ID:
+        sys.exit(
+            "❌  MAL_CLIENT_ID is not set.\n"
+            "    Set it as a GitHub Actions secret named MAL_CLIENT_ID\n"
+            "    or export it locally:  export MAL_CLIENT_ID=your_id_here"
+        )
+    # Quick sanity-check: hit MAL with a known title before processing 11k entries
+    print(f"🔑  Client ID loaded ({CLIENT_ID[:6]}…{'*' * (len(CLIENT_ID)-6)})")
+    print("🧪  Testing MAL API connectivity …", end=" ", flush=True)
+    _test_session = requests.Session()
+    _test_resp = _test_session.get(
+        MAL_SEARCH_URL,
+        params={"q": "Naruto", "limit": 1, "fields": "id,title"},
+        headers={"X-MAL-CLIENT-ID": CLIENT_ID},
+        timeout=10,
+    )
+    if _test_resp.status_code == 401:
+        sys.exit(f"\n❌  MAL returned 401 Unauthorized — Client ID is invalid or expired.")
+    if _test_resp.status_code == 400:
+        sys.exit(
+            f"\n❌  MAL returned 400 Bad Request.\n"
+            f"    Response body: {_test_resp.text[:300]}\n"
+            f"    Your Client ID may be invalid. Check it at: https://myanimelist.net/apiconfig"
+        )
+    if not _test_resp.ok:
+        sys.exit(f"\n❌  MAL API test failed with HTTP {_test_resp.status_code}: {_test_resp.text[:200]}")
+    print(f"✅  OK (HTTP {_test_resp.status_code})\n")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
