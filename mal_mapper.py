@@ -209,6 +209,103 @@ def _make_result(node: dict, confidence: str) -> dict:
     }
 
 
+def _query_mal(
+    query: str,
+    session: requests.Session,
+    headers: dict,
+    limit: int = 15,
+) -> list[dict]:
+    """
+    Fire one MAL search request and return the list of data nodes.
+    Raises on unrecoverable HTTP errors; returns [] on 404 / empty.
+    """
+    params = {
+        "q":      query,
+        "limit":  limit,
+        "fields": "id,title,alternative_titles,num_episodes,status",
+    }
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = session.get(MAL_SEARCH_URL, params=params,
+                               headers=headers, timeout=10)
+            if resp.status_code == 429:
+                wait = RETRY_DELAY * attempt
+                print(f"    ⚠  Rate-limited — waiting {wait}s …")
+                time.sleep(wait)
+                continue
+            if resp.status_code == 401:
+                sys.exit("❌  Unauthorised — check MAL_CLIENT_ID secret.")
+            if not resp.ok:
+                print(f"    ⚠  HTTP {resp.status_code} (attempt {attempt}/{MAX_RETRIES})")
+                time.sleep(RETRY_DELAY)
+                continue
+            return resp.json().get("data", [])
+        except requests.RequestException as exc:
+            print(f"    ⚠  Network error (attempt {attempt}): {exc}")
+            time.sleep(RETRY_DELAY)
+    return []
+
+
+def _score_candidates(
+    data: list[dict],
+    norm_q: str,
+    episode_count: int | None,
+    anime_status: str | None,
+) -> tuple[dict | None, dict | None, dict | None]:
+    """
+    Walk *data* and return three buckets (first hit wins each):
+        exact   – normalised title == norm_q  (episode count not gated)
+        fuzzy   – title substring match  AND  episode count matches
+        first   – episode count matches  (no title match required)
+    Returns (exact_node, best_fuzzy_node, first_ep_match_node).
+    """
+    def episodes_ok(node: dict) -> bool:
+        mal_eps = node.get("num_episodes") or 0
+        src_eps = episode_count or 0
+        if mal_eps == 0 or src_eps == 0:
+            return True
+        return mal_eps == src_eps
+
+    exact_node      = None
+    fuzzy_candidates: list[tuple[dict, bool]] = []
+    first_ep_node   = None
+
+    for item in data:
+        node = item["node"]
+        all_titles = collect_all_titles(node)
+        norm_titles = [normalize(t) for t in all_titles]
+
+        # ── Exact ────────────────────────────────────────────────────────────
+        if exact_node is None and any(t == norm_q for t in norm_titles):
+            exact_node = node
+            continue   # exact beats everything; no need to score further
+
+        # ── Episode-count first-match ─────────────────────────────────────────
+        ep_ok = episodes_ok(node)
+        if first_ep_node is None and ep_ok:
+            first_ep_node = node
+
+        # ── Fuzzy (title substring + episode count) ───────────────────────────
+        title_hit = any(norm_q in t or t in norm_q for t in norm_titles)
+        if title_hit:
+            if ep_ok:
+                status_hit = _status_matches(anime_status, node.get("status"))
+                fuzzy_candidates.append((node, status_hit))
+            else:
+                print(
+                    f"    ↳  skipping '{node['title']}' "
+                    f"(ep mismatch: source={episode_count} mal={node.get('num_episodes')})"
+                )
+
+    # Pick best fuzzy: status-match preferred
+    best_fuzzy = None
+    if fuzzy_candidates:
+        fuzzy_candidates.sort(key=lambda x: (0 if x[1] else 1))
+        best_fuzzy = fuzzy_candidates[0][0]
+
+    return exact_node, best_fuzzy, first_ep_node
+
+
 def search_mal(
     title: str,
     session: requests.Session,
@@ -226,106 +323,63 @@ def search_mal(
         }
     or None if nothing found after all retries.
 
-    Fuzzy and first-result confidence levels require the MAL episode count to
-    match *episode_count* (when both sides are known and non-zero).
-    Status is used as a secondary signal: a status mismatch downgrades a
-    fuzzy candidate but does not discard it outright.
+    Search strategy (two passes):
+      Pass 1 — plain title query (limit 15):
+        Exact match → return immediately.
+        Fuzzy (title substring + episode count match) → keep as candidate.
+        Episode-count match (any title) → keep as fallback.
+
+      Pass 2 — triggered only when Pass 1 found no exact/fuzzy hit AND
+        episode_count is known. Queries "<title> <episode_count>" to surface
+        long-running or oddly-titled series that MAL buries in later pages.
+        Same scoring rules apply.
+
+    Episode count is MANDATORY for fuzzy and first-result confidence.
+    Status is optional: a mismatch ranks a candidate lower but does not
+    discard it.
     """
-    params  = {"q": title, "limit": 5, "fields": "id,title,alternative_titles,num_episodes,status"}
-    headers = {"X-MAL-CLIENT-ID": CLIENT_ID}
+    headers  = {"X-MAL-CLIENT-ID": CLIENT_ID}
+    norm_q   = normalize(title)
 
-    def episodes_ok(node: dict) -> bool:
-        """True when episode counts are compatible (missing/0 on either side = OK)."""
-        mal_eps = node.get("num_episodes") or 0
-        src_eps = episode_count or 0
-        if mal_eps == 0 or src_eps == 0:
-            return True           # unknown on one side — can't disqualify
-        return mal_eps == src_eps
+    # ── Pass 1: plain title ───────────────────────────────────────────────────
+    data1 = _query_mal(title, session, headers, limit=15)
+    if not data1:
+        return None
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = session.get(MAL_SEARCH_URL, params=params,
-                               headers=headers, timeout=10)
+    exact1, fuzzy1, first1 = _score_candidates(
+        data1, norm_q, episode_count, anime_status
+    )
 
-            if resp.status_code == 429:
-                wait = RETRY_DELAY * attempt
-                print(f"    ⚠  Rate-limited — waiting {wait}s …")
-                time.sleep(wait)
-                continue
+    if exact1:
+        return _make_result(exact1, "exact")
+    if fuzzy1:
+        return _make_result(fuzzy1, "fuzzy")
 
-            if resp.status_code == 401:
-                sys.exit("❌  Unauthorised — check MAL_CLIENT_ID secret.")
-
-            if not resp.ok:
-                print(f"    ⚠  HTTP {resp.status_code} (attempt {attempt}/{MAX_RETRIES})")
-                time.sleep(RETRY_DELAY)
-                continue
-
-            data = resp.json().get("data", [])
-            if not data:
-                return None
-
-            norm_q = normalize(title)
-
-            # ── 1. Exact title match (episode count not required) ─────────────
-            for item in data:
-                node = item["node"]
-                if any(normalize(t) == norm_q for t in collect_all_titles(node)):
-                    return _make_result(node, "exact")
-
-            # ── 2. Fuzzy (substring) match — episode count MUST match ─────────
-            #
-            # Priority order within fuzzy:
-            #   a) title substring match  +  episodes match  +  status match   → best fuzzy
-            #   b) title substring match  +  episodes match  (status optional)  → accept
-            #   c) title substring match  +  episodes mismatch                  → skip
-            #
-            fuzzy_candidates = []
-            for item in data:
-                node = item["node"]
-                title_hit = any(
-                    norm_q in normalize(t) or normalize(t) in norm_q
-                    for t in collect_all_titles(node)
-                )
-                if not title_hit:
-                    continue
-                if not episodes_ok(node):
-                    # Title matched but episode count is wrong — reject
-                    print(
-                        f"    ↳  skipping '{node['title']}' "
-                        f"(ep mismatch: source={episode_count} mal={node.get('num_episodes')})"
-                    )
-                    continue
-                status_hit = _status_matches(anime_status, node.get("status"))
-                fuzzy_candidates.append((node, status_hit))
-
-            if fuzzy_candidates:
-                # Prefer candidates where status also matches
-                fuzzy_candidates.sort(key=lambda x: (0 if x[1] else 1))
-                best_node, _ = fuzzy_candidates[0]
-                return _make_result(best_node, "fuzzy")
-
-            # ── 3. First-result fallback — episode count MUST match ───────────
-            #
-            # Walk through results in order; use the first one whose episode
-            # count agrees.  If none agree, return None (→ not_matching).
-            #
-            for item in data:
-                node = item["node"]
-                if episodes_ok(node):
-                    return _make_result(node, "first")
-
-            # All candidates have mismatched episode counts
-            print(
-                f"    ↳  all {len(data)} MAL results have episode-count mismatches "
-                f"(source={episode_count}) — marking not found"
+    # ── Pass 2: title + episode count (only when count is known) ─────────────
+    exact2 = fuzzy2 = first2 = None
+    if episode_count:
+        time.sleep(RATE_LIMIT_DELAY)   # extra courtesy delay for second call
+        query2 = f"{title} {episode_count}"
+        data2  = _query_mal(query2, session, headers, limit=15)
+        if data2:
+            exact2, fuzzy2, first2 = _score_candidates(
+                data2, norm_q, episode_count, anime_status
             )
-            return None
+            if exact2:
+                return _make_result(exact2, "exact")
+            if fuzzy2:
+                return _make_result(fuzzy2, "fuzzy")
 
-        except requests.RequestException as exc:
-            print(f"    ⚠  Network error (attempt {attempt}): {exc}")
-            time.sleep(RETRY_DELAY)
+    # ── First-result fallback: best episode-count match from either pass ──────
+    # Prefer Pass-1 result (closer title match) over Pass-2.
+    for node in (first1, first2):
+        if node is not None:
+            return _make_result(node, "first")
 
+    print(
+        f"    ↳  no episode-count match in any pass "
+        f"(source={episode_count}) — marking not found"
+    )
     return None
 
 
