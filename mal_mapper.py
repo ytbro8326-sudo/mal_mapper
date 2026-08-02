@@ -336,11 +336,17 @@ def _status_matches(anime_status: str | None, mal_status: str | None) -> bool:
     return mapped is None or mapped == mal_status.lower().strip()
 
 
+def _mal_url(mal_id: int) -> str:
+    """Build the canonical MyAnimeList anime page URL from its numeric id."""
+    return f"https://myanimelist.net/anime/{mal_id}"
+
+
 def _make_result(node: dict, confidence: str, score: float) -> dict:
     """Package a MAL node + score into the result dict that search_mal returns."""
     return {
         "id":           node["id"],
         "mal_title":    node["title"],
+        "mal_url":      _mal_url(node["id"]),
         "confidence":   confidence,
         "match_score":  round(score, 1),
         "mal_episodes": node.get("num_episodes"),   # informational only, not used for matching
@@ -517,12 +523,14 @@ def build_entry(anime: dict, result: dict | None) -> dict:
     if result:
         base["mal_id"]       = result["id"]
         base["mal_title"]    = result["mal_title"]
+        base["mal_url"]      = result.get("mal_url")
         base["match_score"]  = result.get("match_score")
         base["mal_episodes"] = result.get("mal_episodes")
         base["mal_status"]   = result.get("mal_status")
     else:
         base["mal_id"]       = None
         base["mal_title"]    = None
+        base["mal_url"]      = None
         base["match_score"]  = None
         base["mal_episodes"] = None
         base["mal_status"]   = None
@@ -608,17 +616,17 @@ def main() -> None:
         elif result["confidence"] == "exact":
             entry = build_entry(anime, result)
             exact_matches.append(entry)
-            print(f"✅  exact      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'")
+            print(f"✅  exact      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'  ({result['mal_url']})")
 
         elif result["confidence"] == "fuzzy":
             entry = build_entry(anime, result)
             fuzzy_matches.append(entry)
-            print(f"🟡  fuzzy      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'")
+            print(f"🟡  fuzzy      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'  ({result['mal_url']})")
 
         else:  # "first"
             entry = build_entry(anime, result)
             first_fallback.append(entry)
-            print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'")
+            print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'  ({result['mal_url']})")
 
         # Mark as processed immediately so partial runs are recoverable
         if dedup_key:
