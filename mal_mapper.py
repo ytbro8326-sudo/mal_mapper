@@ -1,16 +1,15 @@
 """
-MAL ID Mapper for AnimeGG  ·  v5 (save after every 10 successfully matched anime)
-═══════════════════════════════════════════════════════════════════════════════════
-Writes results/exact_matching.json, results/fuzzy_matching.json,
-results/first_results_fallback.json, results/not_matching.json
-after every 10 successfully matched anime (exact/fuzzy/fallback/not_found all count).
-Also does a final save at the very end.
+MAL ID Mapper for AnimeGG  ·  v6 (git commit+push every 10 entries)
+════════════════════════════════════════════════════════════════════
+Saves AND git-commits the 4 result files every 10 processed anime
+so changes appear in the repo in real time, not only at the end.
 """
 
 import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -28,13 +27,15 @@ MAL_SEARCH_URL   = "https://api.myanimelist.net/v2/anime"
 RATE_LIMIT_DELAY = 0.5
 MAX_RETRIES      = 3
 RETRY_DELAY      = 6
-SAVE_EVERY       = 10   # ← save after every N successfully processed anime
+SAVE_EVERY       = 10   # commit+push to repo every N processed anime
 
 RESULTS_DIR = Path("results")
 OUT_EXACT   = RESULTS_DIR / "exact_matching.json"
 OUT_FUZZY   = RESULTS_DIR / "fuzzy_matching.json"
 OUT_FIRST   = RESULTS_DIR / "first_results_fallback.json"
 OUT_NONE    = RESULTS_DIR / "not_matching.json"
+
+RESULT_FILES = [str(OUT_EXACT), str(OUT_FUZZY), str(OUT_FIRST), str(OUT_NONE)]
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -120,7 +121,7 @@ def search_mal(title: str, session: requests.Session) -> dict | None:
 
 
 def build_entry(anime: dict, result: dict | None) -> dict:
-    base = {
+    return {
         "title":         anime.get("title"),
         "uri":           anime.get("uri"),
         "url":           anime.get("url"),
@@ -132,14 +133,10 @@ def build_entry(anime: dict, result: dict | None) -> dict:
         "mal_id":        result["id"]        if result else None,
         "mal_title":     result["mal_title"] if result else None,
     }
-    return base
 
 
-def save_all(exact: list, fuzzy: list, first: list, none: list) -> None:
-    """
-    Overwrite all four result JSON files atomically.
-    Uses write-to-tmp-then-rename so files are never half-written.
-    """
+def write_files(exact: list, fuzzy: list, first: list, none: list) -> None:
+    """Write all 4 result files atomically (tmp → rename)."""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     for path, records in (
         (OUT_EXACT, exact),
@@ -150,14 +147,52 @@ def save_all(exact: list, fuzzy: list, first: list, none: list) -> None:
         tmp = path.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
-        tmp.replace(path)   # atomic on Linux/macOS
+        tmp.replace(path)
+
+
+def git_commit_push(total_done: int) -> None:
+    """
+    Stage the 4 result files, commit, and push to origin.
+    Silently skips if there is nothing new to commit (files unchanged).
+    Retries once on push failure (e.g. transient network hiccup).
+    """
+    try:
+        subprocess.run(["git", "add"] + RESULT_FILES, check=True)
+
+        diff = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            capture_output=True,
+        )
+        if diff.returncode == 0:
+            print("    ℹ️   git: nothing changed — skipping commit.")
+            return
+
+        msg = f"chore: progress update — {total_done} anime mapped"
+        subprocess.run(["git", "commit", "-m", msg], check=True)
+
+        for push_attempt in range(1, 3):
+            result = subprocess.run(["git", "push"], capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"    🚀  git push OK (total in repo: {total_done})")
+                return
+            print(f"    ⚠️   git push failed (attempt {push_attempt}): {result.stderr.strip()}")
+            time.sleep(5)
+
+        print("    ❌  git push failed after 2 attempts — will retry next batch.")
+
+    except subprocess.CalledProcessError as exc:
+        print(f"    ❌  git error: {exc}")
+
+
+def save_and_push(exact: list, fuzzy: list, first: list, none: list) -> None:
+    """Write files to disk, then immediately commit+push to GitHub."""
+    write_files(exact, fuzzy, first, none)
+    total_done = len(exact) + len(fuzzy) + len(first) + len(none)
+    git_commit_push(total_done)
+    sys.stdout.flush()
 
 
 def load_existing() -> tuple[list, list, list, list, set]:
-    """
-    Read the four result files from disk to resume a previous run.
-    Returns the four lists + a set of already-seen titles.
-    """
     exact, fuzzy, first, none = [], [], [], []
     seen: set[str] = set()
 
@@ -196,7 +231,6 @@ def main() -> None:
                 p.unlink()
         print("🔄  --force: cleared all result files.\n")
 
-    # ── Resume: load whatever is already on disk ───────────────────────────────
     exact_matches, fuzzy_matches, first_fallback, not_found, seen_titles = load_existing()
 
     if seen_titles:
@@ -211,8 +245,8 @@ def main() -> None:
     total      = len(anime_list)
     print(f"📋  {total} anime entries loaded.\n{'─'*60}")
 
-    processed_this_run = 0   # counts only newly processed entries (not skipped)
-    batch_count        = 0   # how many in the current unsaved batch
+    processed_this_run = 0
+    batch_count        = 0
 
     for i, anime in enumerate(anime_list, 1):
         title = (anime.get("title") or "").strip()
@@ -233,15 +267,12 @@ def main() -> None:
         if result is None:
             not_found.append(entry)
             print("❌  not found")
-
         elif result["confidence"] == "exact":
             exact_matches.append(entry)
             print(f"✅  exact      mal_id={result['id']}  → '{result['mal_title']}'")
-
         elif result["confidence"] == "fuzzy":
             fuzzy_matches.append(entry)
             print(f"🟡  fuzzy      mal_id={result['id']}  → '{result['mal_title']}'")
-
         else:
             first_fallback.append(entry)
             print(f"🟠  fallback   mal_id={result['id']}  → '{result['mal_title']}'")
@@ -250,31 +281,32 @@ def main() -> None:
         processed_this_run += 1
         batch_count        += 1
 
-        # ── Save every SAVE_EVERY successfully processed anime ─────────────────
+        # ── Every 10 entries: write files AND git commit+push ──────────────────
         if batch_count >= SAVE_EVERY:
-            save_all(exact_matches, fuzzy_matches, first_fallback, not_found)
             total_done = len(exact_matches) + len(fuzzy_matches) + len(first_fallback) + len(not_found)
             print(
-                f"\n    💾  Saved after {SAVE_EVERY} entries "
-                f"(total saved so far: {total_done})  "
-                f"[exact={len(exact_matches)}  fuzzy={len(fuzzy_matches)}  "
-                f"fallback={len(first_fallback)}  not_found={len(not_found)}]\n"
+                f"\n    💾  Batch of {SAVE_EVERY} complete — saving & pushing …"
+                f"  [exact={len(exact_matches)}  fuzzy={len(fuzzy_matches)}"
+                f"  fallback={len(first_fallback)}  not_found={len(not_found)}]"
             )
-            batch_count = 0   # reset counter for next batch of 10
+            save_and_push(exact_matches, fuzzy_matches, first_fallback, not_found)
+            batch_count = 0
+            print()
 
         time.sleep(RATE_LIMIT_DELAY)
 
-    # ── Final save (catches any remainder < SAVE_EVERY) ───────────────────────
+    # ── Final flush: any remainder < 10 ───────────────────────────────────────
     if batch_count > 0:
-        save_all(exact_matches, fuzzy_matches, first_fallback, not_found)
-        print(f"\n    💾  Final save — flushed remaining {batch_count} entries.")
+        total_done = len(exact_matches) + len(fuzzy_matches) + len(first_fallback) + len(not_found)
+        print(f"\n    💾  Final save — flushing remaining {batch_count} entries …")
+        save_and_push(exact_matches, fuzzy_matches, first_fallback, not_found)
 
     print(f"\n{'═'*60}")
     print(f"  ✅  Exact matches          : {len(exact_matches)}")
     print(f"  🟡  Fuzzy matches          : {len(fuzzy_matches)}")
     print(f"  🟠  First-result fallbacks : {len(first_fallback)}")
     print(f"  ❌  Not found              : {len(not_found)}")
-    print(f"  ─────────────────────────────")
+    print(f"  ─────────────────────────────────────────")
     print(f"  📋  Total processed        : {processed_this_run} (this run)")
     print(f"{'═'*60}")
 
