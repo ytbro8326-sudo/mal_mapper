@@ -336,109 +336,14 @@ def _status_matches(anime_status: str | None, mal_status: str | None) -> bool:
     return mapped is None or mapped == mal_status.lower().strip()
 
 
-def _title_exact_match(title: str, alternate_title: str | None, node: dict) -> bool:
-    """
-    Strict check: does the source `title` OR any part of `alternate_title`
-    normalise to EXACTLY the same string as `mal_title` or one of MAL's
-    alternative titles for this node? (Not fuzzy — exact string equality
-    after normalisation only.)
-    """
-    candidate_titles = collect_all_titles(node)
-    norm_candidates  = {normalize(t) for t in candidate_titles if normalize(t)}
-
-    query_titles = [title] + split_alt_titles(alternate_title)
-    for q in query_titles:
-        nq = normalize(q)
-        if nq and nq in norm_candidates:
-            return True
-    return False
-
-
-def _episode_exact_match(episode_count: int | None, mal_episodes: int | None) -> bool:
-    """Strict check: source episode_count must equal MAL's num_episodes exactly (both known)."""
-    if not episode_count or not mal_episodes:
-        return False
-    return int(episode_count) == int(mal_episodes)
-
-
-def _status_exact_match(anime_status: str | None, mal_status: str | None) -> bool:
-    """
-    Strict check: source status must map to the SAME MAL status value,
-    e.g. "Completed" ↔ "finished_airing", "Ongoing" ↔ "currently_airing".
-
-    "not_yet_aired" is NEVER accepted here, even if some loose mapping
-    would otherwise allow it — a series MAL believes hasn't aired yet can
-    never be a verified match for a source marked Completed or Ongoing.
-    """
-    if not anime_status or not mal_status:
-        return False
-
-    mal_status_norm = mal_status.lower().strip()
-    if mal_status_norm == "not_yet_aired":
-        return False
-
-    STRICT_STATUS_MAP: dict[str, str] = {
-        "completed":        "finished_airing",
-        "finished":         "finished_airing",
-        "ongoing":          "currently_airing",
-        "airing":           "currently_airing",
-        "currently airing": "currently_airing",
-    }
-    mapped = STRICT_STATUS_MAP.get(anime_status.lower().strip())
-    return mapped is not None and mapped == mal_status_norm
-
-
-def verify_full_match(
-    title: str,
-    alternate_title: str | None,
-    episode_count: int | None,
-    anime_status: str | None,
-    node: dict,
-) -> dict:
-    """
-    Runs the three strict checks the user asked for and returns a small
-    verification block to merge into the result:
-        title   == mal_title (or an alternate title)   — exact, not fuzzy
-        episode_count == mal_episodes                  — exact
-        status  maps to the same mal_status            — exact, excluding not_yet_aired
-    Only when ALL THREE hold is the match "100% verified".
-    """
-    title_ok   = _title_exact_match(title, alternate_title, node)
-    episode_ok = _episode_exact_match(episode_count, node.get("num_episodes"))
-    status_ok  = _status_exact_match(anime_status, node.get("status"))
-    fully_verified = title_ok and episode_ok and status_ok
-
-    return {
-        "fully_verified": fully_verified,
-        "verification_status": (
-            "100% matched [title=episode=status] — MAL match verified"
-            if fully_verified else
-            "Not fully verified"
-        ),
-        "verification_detail": {
-            "title_exact":   title_ok,
-            "episode_exact": episode_ok,
-            "status_exact":  status_ok,
-        },
-    }
-
-
 def _mal_url(mal_id: int) -> str:
     """Build the canonical MyAnimeList anime page URL from its numeric id."""
     return f"https://myanimelist.net/anime/{mal_id}"
 
 
-def _make_result(
-    node: dict,
-    confidence: str,
-    score: float,
-    title: str,
-    alternate_title: str | None,
-    episode_count: int | None,
-    anime_status: str | None,
-) -> dict:
-    """Package a MAL node + score + full-verification block into the result dict."""
-    result = {
+def _make_result(node: dict, confidence: str, score: float) -> dict:
+    """Package a MAL node + score into the result dict that search_mal returns."""
+    return {
         "id":           node["id"],
         "mal_title":    node["title"],
         "mal_url":      _mal_url(node["id"]),
@@ -447,8 +352,6 @@ def _make_result(
         "mal_episodes": node.get("num_episodes"),   # must be >= source episode_count (see _episode_count_ok)
         "mal_status":   node.get("status"),
     }
-    result.update(verify_full_match(title, alternate_title, episode_count, anime_status, node))
-    return result
 
 
 def _query_mal(
@@ -603,9 +506,9 @@ def search_mal(
     if data1:
         node1, score1 = _best_candidate(data1, [title], anime_status, episode_count)
         if node1 and score1 >= EXACT_MIN_SCORE:
-            return _make_result(node1, "exact", score1, title, alternate_title, episode_count, anime_status)
+            return _make_result(node1, "exact", score1)
         if node1 and score1 >= FUZZY_MIN_SCORE:
-            return _make_result(node1, "fuzzy", score1, title, alternate_title, episode_count, anime_status)
+            return _make_result(node1, "fuzzy", score1)
 
     # ── Tier 2: alternate title(s) ────────────────────────────────────────────
     alt_titles = split_alt_titles(alternate_title)
@@ -622,9 +525,9 @@ def search_mal(
         if combined_data:
             node2, score2 = _best_candidate(combined_data, all_known_titles, anime_status, episode_count)
             if node2 and score2 >= EXACT_MIN_SCORE:
-                return _make_result(node2, "exact", score2, title, alternate_title, episode_count, anime_status)
+                return _make_result(node2, "exact", score2)
             if node2 and score2 >= FUZZY_MIN_SCORE:
-                return _make_result(node2, "fuzzy", score2, title, alternate_title, episode_count, anime_status)
+                return _make_result(node2, "fuzzy", score2)
 
     # ── Fallback: best remaining candidate that still passes the episode filter ──
     fallback_pool  = combined_data if alt_titles else data1
@@ -634,7 +537,7 @@ def search_mal(
         node_fb, score_fb = _best_candidate(fallback_pool, fallback_query, anime_status, episode_count)
         if node_fb:
             print(f"    ↳  no match ≥ {FUZZY_MIN_SCORE:.0f}% — using best episode-consistent result as fallback")
-            return _make_result(node_fb, "first", score_fb, title, alternate_title, episode_count, anime_status)
+            return _make_result(node_fb, "first", score_fb)
 
     # Nothing survived the episode filter at all — better to report "not found"
     # than to hand back an obviously-wrong movie/OVA/special.
@@ -664,9 +567,6 @@ def build_entry(anime: dict, result: dict | None) -> dict:
         base["match_score"]         = result.get("match_score")
         base["mal_episodes"]        = result.get("mal_episodes")
         base["mal_status"]          = result.get("mal_status")
-        base["fully_verified"]      = result.get("fully_verified")
-        base["verification_status"] = result.get("verification_status")
-        base["verification_detail"] = result.get("verification_detail")
     else:
         base["mal_id"]              = None
         base["mal_title"]           = None
@@ -674,9 +574,6 @@ def build_entry(anime: dict, result: dict | None) -> dict:
         base["match_score"]         = None
         base["mal_episodes"]        = None
         base["mal_status"]          = None
-        base["fully_verified"]      = None
-        base["verification_status"] = None
-        base["verification_detail"] = None
     return base
 
 
@@ -760,14 +657,12 @@ def main() -> None:
         elif result["confidence"] == "exact":
             entry = build_entry(anime, result)
             exact_matches.append(entry)
-            verified_tag = "  [VERIFIED 100%]" if result.get("fully_verified") else ""
-            print(f"✅  exact      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'  ({result['mal_url']}){verified_tag}")
+            print(f"✅  exact      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'  ({result['mal_url']})")
 
         elif result["confidence"] == "fuzzy":
             entry = build_entry(anime, result)
             fuzzy_matches.append(entry)
-            verified_tag = "  [VERIFIED 100%]" if result.get("fully_verified") else ""
-            print(f"🟡  fuzzy      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'  ({result['mal_url']}){verified_tag}")
+            print(f"🟡  fuzzy      mal_id={result['id']}  score={result['match_score']}  → '{result['mal_title']}'  ({result['mal_url']})")
 
         else:  # "first"
             entry = build_entry(anime, result)
